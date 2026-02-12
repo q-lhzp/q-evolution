@@ -33,7 +33,7 @@ OpenClaw plugin for AI agent self-evolution, personality development, and growth
          "q-evolution": {
            "enabled": true,
            "config": {
-             "workspacePath": "/home/leo/Schreibtisch"
+             "workspacePath": "/home/user/Schreibtisch"
            }
          }
        }
