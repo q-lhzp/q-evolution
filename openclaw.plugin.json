@@ -1,0 +1,25 @@
+{
+  "id": "q-evolution",
+  "name": "Q Evolution",
+  "description": "Personality evolution, growth journal, compaction guard, and self-reflection tools",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "workspacePath": { "type": "string" },
+      "growthContextEntries": { "type": "number" }
+    }
+  },
+  "uiHints": {
+    "workspacePath": {
+      "label": "Workspace Path",
+      "placeholder": "/home/leo/Schreibtisch",
+      "help": "Path to the agent workspace where GROWTH.md lives"
+    },
+    "growthContextEntries": {
+      "label": "Growth Context Entries",
+      "placeholder": "15",
+      "help": "Number of recent GROWTH.md entries to inject at session start"
+    }
+  }
+}

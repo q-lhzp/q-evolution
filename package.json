@@ -1,0 +1,13 @@
+{
+  "name": "q-evolution",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Self-evolution, personality development, and growth journal plugin for OpenClaw agents",
+  "license": "MIT",
+  "openclaw": {
+    "extensions": ["./index.ts"]
+  },
+  "dependencies": {
+    "@sinclair/typebox": "0.34.48"
+  }
+}
