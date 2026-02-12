@@ -49,7 +49,7 @@ OpenClaw plugin for AI agent self-evolution, personality development, and growth
 
 ## Configuration
 
-- `workspacePath` (string, default `/home/leo/Schreibtisch`)
+- `workspacePath` (string, default `/home/user/Schreibtisch`)
 - `growthContextEntries` (number, default `15`)
 
 ## License
