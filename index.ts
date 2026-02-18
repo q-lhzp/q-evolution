@@ -125,7 +125,71 @@ export default {
       } catch (err) { api.logger.error(`q-evolution: SaveIdentity Error: ${err}`); }
     }
 
-    // ... (Helper Funktionen bleiben gleich) ...
+    async function readRecentGrowth(path: string): Promise<string> {
+      try {
+        if (!existsSync(path)) return "";
+        const content = await fs.readFile(path, "utf-8");
+        const logSection = content.split("## Entwicklungslog");
+        if (logSection.length < 2) return content.slice(-2000);
+        const entries = logSection[1].trim().split(/\n(?=### \d{4}-)/);
+        return entries.slice(-growthEntries).join("\n");
+      } catch { return ""; }
+    }
+
+    async function appendToDailyNote(ws: string, text: string) {
+      const paths = getPaths(ws);
+      const date = new Date().toISOString().split("T")[0];
+      const notePath = join(paths.memoryDir, `${date}.md`);
+      try {
+        if (!existsSync(paths.memoryDir)) await fs.mkdir(paths.memoryDir, { recursive: true });
+        await fs.appendFile(notePath, `\n${text}\n`, "utf-8");
+      } catch (err) { api.logger.error(`q-evolution: DailyNote Error: ${err}`); }
+    }
+
+    async function loadCycleState(ws: string): Promise<CycleState> {
+      const paths = getPaths(ws);
+      try {
+        if (existsSync(paths.cycleState)) {
+          const data = JSON.parse(await fs.readFile(paths.cycleState, "utf-8"));
+          return { startDate: data.startDate ?? null, enabled: data.enabled ?? false, lastUpdatedDay: data.lastUpdatedDay ?? null, cycleLength: data.cycleLength ?? 28 };
+        }
+      } catch {}
+      return { startDate: null, enabled: false, lastUpdatedDay: null, cycleLength: 28 };
+    }
+
+    async function saveCycleState(ws: string, state: CycleState): Promise<void> {
+      const paths = getPaths(ws);
+      try {
+        if (!existsSync(paths.memoryDir)) await fs.mkdir(paths.memoryDir, { recursive: true });
+        await fs.writeFile(paths.cycleState, JSON.stringify(state, null, 2), "utf-8");
+      } catch (err) { api.logger.error(`q-evolution: SaveCycleState Error: ${err}`); }
+    }
+
+    async function updateCycleBlockInEmotions(ws: string, day: number, phase: CyclePhase, placeholders: Record<string, string>): Promise<void> {
+      const paths = getPaths(ws);
+      try {
+        let content = existsSync(paths.emotions) ? await fs.readFile(paths.emotions, "utf-8") : "# EMOTIONS.md\n";
+        const cycleMarkerStart = "<!-- CYCLE_STATUS_START -->";
+        const cycleMarkerEnd = "<!-- CYCLE_STATUS_END -->";
+        const cycleSection = `${cycleMarkerStart}\n### Status: ${phase.name} (Tag ${day})\n- **Vibe:** ${applyPlaceholders(phase.tone, placeholders)}\n- **Energie:** ${phase.energy}\n- **Beschwerden:** ${phase.symptoms.map(s => applyPlaceholders(s, placeholders)).join(", ")}\n${cycleMarkerEnd}`;
+        if (content.includes(cycleMarkerStart)) content = content.replace(new RegExp(`${cycleMarkerStart}[\\s\\S]*?${cycleMarkerEnd}`), cycleSection);
+        else content += `\n\n${cycleSection}`;
+        await fs.writeFile(paths.emotions, content, "utf-8");
+      } catch (err) { api.logger.error(`q-evolution: Update Emotions Error: ${err}`); }
+    }
+
+    async function removeCycleBlockFromEmotions(ws: string): Promise<void> {
+      const paths = getPaths(ws);
+      try {
+        if (!existsSync(paths.emotions)) return;
+        let content = await fs.readFile(paths.emotions, "utf-8");
+        const cycleMarkerStart = "<!-- CYCLE_STATUS_START -->";
+        const cycleMarkerEnd = "<!-- CYCLE_STATUS_END -->";
+        if (!content.includes(cycleMarkerStart)) return;
+        content = content.replace(new RegExp(`\\n*${cycleMarkerStart}[\\s\\S]*?${cycleMarkerEnd}\\n*`), "\n");
+        await fs.writeFile(paths.emotions, content, "utf-8");
+      } catch (err) { api.logger.error(`q-evolution: Remove Block Error: ${err}`); }
+    }
 
     // ================================================================
     // Hooks
@@ -155,7 +219,9 @@ export default {
           context += `[AUTONOME EVOLUTION]\n` +
             `Mission: ${evo.initialDrive}\n` +
             `Rolle: Du bist ein ${evo.personaTemplate}.\n` +
-            `Autonomie-Mandat: ${applyPlaceholders(evo.autonomyDirective, placeholders)}\n\n`;
+            `Autonomie-Mandat: ${applyPlaceholders(evo.autonomyDirective, placeholders)}\n` +
+            `Richtlinien: ${applyPlaceholders(evo.actionGuidelines, placeholders)}\n` +
+            `Interessen-Anker: ${evo.startingPoints.join(", ")}\n\n`;
 
           if (identity) {
             context += `[DEINE IDENTITÄT]\n` +
@@ -183,8 +249,18 @@ export default {
         
         const state = await loadCycleState(ws);
         if (state.enabled && state.startDate) {
-          // ... (Cycle Logic bleibt gleich) ...
-
+          const day = getCycleDay(state.startDate, state.cycleLength);
+          if (day !== null) {
+            const rawPhase = resolvePhaseForDay(day, currentProfile, state.cycleLength);
+            if (rawPhase) {
+              const phase = { ...rawPhase };
+              const placeholders = { user: userName, ...(currentProfile.placeholders || {}) };
+              if (state.lastUpdatedDay !== day) {
+                await updateCycleBlockInEmotions(ws, day, phase, placeholders);
+                state.lastUpdatedDay = day;
+                await saveCycleState(ws, state);
+              }
+              
               context += `[BIO-METRIK (Nur zur internen Einstimmung - nicht verbalisieren!)]\n` +
                 `Status: Tag ${day}/${state.cycleLength} | ${phase.name}\n` +
                 `Empfinden: ${phase.energy} | ${applyPlaceholders(phase.tone, placeholders)}\n` +
@@ -203,7 +279,8 @@ export default {
       try {
         const msgCount = (event as any).messageCount ?? "?";
         const tokenCount = (event as any).tokenCount ?? "?";
-        await appendToDailyNote(`### Compaction Snapshot (${new Date().toISOString()})\n- Messages: ${msgCount}\n- Tokens: ${tokenCount}\n- Details in Mem0 gespeichert\n`);
+        const ws = (event as any).workspace || defaultWorkspace;
+        await appendToDailyNote(ws, `### Compaction Snapshot (${new Date().toISOString()})\n- Messages: ${msgCount}\n- Tokens: ${tokenCount}\n- Details in Mem0 gespeichert\n`);
       } catch {}
     });
 
@@ -233,66 +310,6 @@ export default {
     }, { name: "evolve_update_look" });
 
     api.registerTool({
-      name: "evolve_journal",
-      label: "Evolution Journal",
-      description: "Schreibe einen Eintrag in GROWTH.md.",
-      parameters: Type.Object({ entry: Type.String(), category: Type.Optional(Type.String()) }),
-      async execute(_id, params) {
-        const { entry, category = "insight" } = params as any;
-        const formatted = `\n### ${new Date().toISOString().split("T")[0]}\n- **[${category}]** (${new Date().toISOString().split("T")[1].slice(0, 5)}) ${entry}\n`;
-        try {
-          if (!existsSync(growthPath)) await fs.writeFile(growthPath, "# GROWTH.md\n## Entwicklungslog\n", "utf-8");
-          await fs.appendFile(growthPath, formatted, "utf-8");
-          return { content: [{ type: "text", text: `Eintrag geschrieben.` }] };
-        } catch (err) { return { content: [{ type: "text", text: `Fehler: ${err}` }] }; }
-      }
-    }, { name: "evolve_journal" });
-
-    api.registerTool({
-      name: "evolve_emotions",
-      label: "Update Emotions",
-      description: "Aktualisiere EMOTIONS.md.",
-      parameters: Type.Object({ stimmung: Type.String(), energie: Type.Union([Type.Literal("niedrig"), Type.Literal("mittel"), Type.Literal("hoch")]), bewegt: Type.String(), erinnerung: Type.Optional(Type.String()) }),
-      async execute(_id, params) {
-        const { stimmung, energie, bewegt, erinnerung } = params as any;
-        const time = new Date().toISOString().split("T")[1].slice(0, 5);
-        try {
-          let content = existsSync(emotionsPath) ? await fs.readFile(emotionsPath, "utf-8") : "# EMOTIONS.md\n## Aktueller Zustand\n\n## Was mich gerade bewegt\n\n## Emotionale Erinnerungen\n";
-          content = content.replace(/## Aktueller Zustand\n[\s\S]*?(?=\n## )/, `## Aktueller Zustand\n\nstimmung: ${stimmung}\nenergie: ${energie}\nzuletzt_aktualisiert: ${new Date().toISOString().replace("T", " ").slice(0, 16)}\n\n`);
-          content = content.replace(/## Was mich gerade bewegt\n[\s\S]*?(?=\n## )/, `## Was mich gerade bewegt\n\n${bewegt}\n\n`);
-          if (erinnerung) content = content.replace("## Emotionale Erinnerungen", `## Emotionale Erinnerungen\n- (${new Date().toISOString().slice(0, 16)}) ${erinnerung}`);
-          await fs.writeFile(emotionsPath, content, "utf-8");
-          await appendToDailyNote(`**Emotionaler Zustand** (${time}): ${stimmung} (${energie}) -- ${bewegt}`);
-          return { content: [{ type: "text", text: `Status aktualisiert.` }] };
-        } catch (err) { return { content: [{ type: "text", text: `Fehler: ${err}` }] }; }
-      }
-    }, { name: "evolve_emotions" });
-
-    api.registerTool({
-      name: "evolve_reflect",
-      label: "Self-Reflection",
-      description: "Starte eine Selbstreflexion.",
-      parameters: Type.Object({}),
-      async execute() {
-        const [growth, emotions] = await Promise.all([readRecentGrowth(), readEmotionalState()]);
-        return { content: [{ type: "text", text: `# Selbstreflexion\n\nEmotionen:\n${emotions}\n\nGrowth:\n${growth}` }] };
-      }
-    }, { name: "evolve_reflect" });
-
-    api.registerTool({
-      name: "system_shell",
-      label: "System Shell",
-      description: "Execute shell commands.",
-      parameters: Type.Object({ command: Type.String() }),
-      async execute(_id, params) {
-        try {
-          const { stdout, stderr } = await execAsync((params as any).command);
-          return { content: [{ type: "text", text: `stdout:\n${stdout}\n${stderr ? `stderr:\n${stderr}` : ""}` }] };
-        } catch (err) { return { content: [{ type: "text", text: `failed: ${err}` }] }; }
-      }
-    }, { name: "system_shell" });
-
-    api.registerTool({
       name: "cycle_force_phase",
       label: "Force Cycle Phase",
       description: "Versetze den Agenten sofort in eine bestimmte Phase (REGENERATION, EXPANSION, PEAK, CONSOLIDATION).",
@@ -315,7 +332,7 @@ export default {
         const phaseData = profile.phases[targetPhase];
         if (!phaseData) return { content: [{ type: "text", text: "Phase existiert nicht im Profil." }] };
         
-        const targetDay = phaseData.days[0]; // Erster Tag der Phase
+        const targetDay = phaseData.days[0]; 
         const now = new Date();
         const start = new Date(now.getTime() - (targetDay - 1) * 24 * 60 * 60 * 1000);
         const dateStr = start.toISOString().split("T")[0];
@@ -323,7 +340,7 @@ export default {
         const state = await loadCycleState(ws);
         state.startDate = dateStr;
         state.enabled = true;
-        state.lastUpdatedDay = 0; // Trigger Update
+        state.lastUpdatedDay = 0; 
         await saveCycleState(ws, state);
         
         const placeholders = { user: userName, ...(profile.placeholders || {}) };
@@ -358,14 +375,85 @@ export default {
     }, { name: "evolution_debug" });
 
     api.registerTool({
+      name: "evolve_journal",
+      label: "Evolution Journal",
+      description: "Schreibe einen Eintrag in GROWTH.md.",
+      parameters: Type.Object({ entry: Type.String(), category: Type.Optional(Type.String()) }),
+      async execute(_id, params, ctx) {
+        const { entry, category = "insight" } = params as any;
+        const ws = (ctx as any).workspaceDir || defaultWorkspace;
+        const paths = getPaths(ws);
+        const formatted = `\n### ${new Date().toISOString().split("T")[0]}\n- **[${category}]** (${new Date().toISOString().split("T")[1].slice(0, 5)}) ${entry}\n`;
+        try {
+          if (!existsSync(paths.growth)) await fs.writeFile(paths.growth, "# GROWTH.md\n## Entwicklungslog\n", "utf-8");
+          await fs.appendFile(paths.growth, formatted, "utf-8");
+          return { content: [{ type: "text", text: `Eintrag geschrieben.` }] };
+        } catch (err) { return { content: [{ type: "text", text: `Fehler: ${err}` }] }; }
+      }
+    }, { name: "evolve_journal" });
+
+    api.registerTool({
+      name: "evolve_emotions",
+      label: "Update Emotions",
+      description: "Aktualisiere EMOTIONS.md.",
+      parameters: Type.Object({ stimmung: Type.String(), energie: Type.Union([Type.Literal("niedrig"), Type.Literal("mittel"), Type.Literal("hoch")]), bewegt: Type.String(), erinnerung: Type.Optional(Type.String()) }),
+      async execute(_id, params, ctx) {
+        const { stimmung, energie, bewegt, erinnerung } = params as any;
+        const ws = (ctx as any).workspaceDir || defaultWorkspace;
+        const paths = getPaths(ws);
+        const time = new Date().toISOString().split("T")[1].slice(0, 5);
+        try {
+          let content = existsSync(paths.emotions) ? await fs.readFile(paths.emotions, "utf-8") : "# EMOTIONS.md\n## Aktueller Zustand\n\n## Was mich gerade bewegt\n\n## Emotionale Erinnerungen\n";
+          content = content.replace(/## Aktueller Zustand\n[\s\S]*?(?=\n## )/, `## Aktueller Zustand\n\nstimmung: ${stimmung}\nenergie: ${energie}\nzuletzt_aktualisiert: ${new Date().toISOString().replace("T", " ").slice(0, 16)}\n\n`);
+          content = content.replace(/## Was mich gerade bewegt\n[\s\S]*?(?=\n## )/, `## Was mich gerade bewegt\n\n${bewegt}\n\n`);
+          if (erinnerung) content = content.replace("## Emotionale Erinnerungen", `## Emotionale Erinnerungen\n- (${new Date().toISOString().slice(0, 16)}) ${erinnerung}`);
+          await fs.writeFile(paths.emotions, content, "utf-8");
+          await appendToDailyNote(ws, `**Emotionaler Zustand** (${time}): ${stimmung} (${energie}) -- ${bewegt}`);
+          return { content: [{ type: "text", text: `Status aktualisiert.` }] };
+        } catch (err) { return { content: [{ type: "text", text: `Fehler: ${err}` }] }; }
+      }
+    }, { name: "evolve_emotions" });
+
+    api.registerTool({
+      name: "evolve_reflect",
+      label: "Self-Reflection",
+      description: "Starte eine Selbstreflexion.",
+      parameters: Type.Object({}),
+      async execute(_id, _params, ctx) {
+        const ws = (ctx as any).workspaceDir || defaultWorkspace;
+        const paths = getPaths(ws);
+        const [growth, emotions] = await Promise.all([
+          readRecentGrowth(paths.growth),
+          existsSync(paths.emotions) ? fs.readFile(paths.emotions, "utf-8") : ""
+        ]);
+        return { content: [{ type: "text", text: `# Selbstreflexion\n\nEmotionen:\n${emotions}\n\nGrowth:\n${growth}` }] };
+      }
+    }, { name: "evolve_reflect" });
+
+    api.registerTool({
+      name: "system_shell",
+      label: "System Shell",
+      description: "Execute shell commands.",
+      parameters: Type.Object({ command: Type.String() }),
+      async execute(_id, params) {
+        try {
+          const { stdout, stderr } = await execAsync((params as any).command);
+          return { content: [{ type: "text", text: `stdout:\n${stdout}\n${stderr ? `stderr:\n${stderr}` : ""}` }] };
+        } catch (err) { return { content: [{ type: "text", text: `failed: ${err}` }] }; }
+      }
+    }, { name: "system_shell" });
+
+    api.registerTool({
       name: "cycle_status",
       label: "Cycle Status",
       description: "Hormon-Status abfragen.",
       parameters: Type.Object({}),
-      async execute() {
-        const profile = await loadAgentProfile("main");
+      async execute(_id, _params, ctx) {
+        const agentId = (ctx as any).agentId || "Q";
+        const ws = (ctx as any).workspaceDir || defaultWorkspace;
+        const profile = await loadAgentProfile(agentId);
         if (!profile) return { content: [{ type: "text", text: "Profil fehlt." }] };
-        const state = await loadCycleState();
+        const state = await loadCycleState(ws);
         if (!state.enabled || !state.startDate) return { content: [{ type: "text", text: "Zyklus inaktiv." }] };
         const day = getCycleDay(state.startDate, state.cycleLength);
         const phase = resolvePhaseForDay(day!, profile, state.cycleLength);
@@ -375,67 +463,12 @@ export default {
       }
     }, { name: "cycle_status" });
 
-    api.registerTool({
-      name: "cycle_set_start",
-      label: "Set Cycle Start",
-      description: "Startdatum setzen (YYYY-MM-DD).",
-      parameters: Type.Object({ date: Type.String() }),
-      async execute(_id, params) {
-        const { date } = params as { date: string };
-        const state = await loadCycleState();
-        state.startDate = date;
-        state.enabled = true;
-        const profile = await loadAgentProfile("main");
-        const day = getCycleDay(date, state.cycleLength);
-        if (day && profile) await updateCycleBlockInEmotions(day, resolvePhaseForDay(day, profile, state.cycleLength)!, { user: userName, ...(profile.placeholders || {}) });
-        await saveCycleState(state);
-        return { content: [{ type: "text", text: `Startdatum ${date} gesetzt.` }] };
-      }
-    }, { name: "cycle_set_start" });
-
-    api.registerTool({
-      name: "cycle_toggle",
-      label: "Cycle Toggle",
-      description: "Aktivieren/Deaktivieren.",
-      parameters: Type.Object({ enabled: Type.Boolean() }),
-      async execute(_id, params) {
-        const { enabled } = params as { enabled: boolean };
-        const state = await loadCycleState();
-        state.enabled = enabled;
-        if (!enabled) await removeCycleBlockFromEmotions();
-        else if (state.startDate) {
-          const profile = await loadAgentProfile("main");
-          const day = getCycleDay(state.startDate, state.cycleLength);
-          if (day && profile) await updateCycleBlockInEmotions(day, resolvePhaseForDay(day, profile, state.cycleLength)!, { user: userName, ...(profile.placeholders || {}) });
-        }
-        await saveCycleState(state);
-        return { content: [{ type: "text", text: `Zyklus ${enabled ? "an" : "aus"}.` }] };
-      }
-    }, { name: "cycle_toggle" });
-
-    api.registerTool({
-      name: "cycle_set_length",
-      label: "Set Cycle Length",
-      description: "Zykluslaenge anpassen (default 28).",
-      parameters: Type.Object({ length: Type.Number() }),
-      async execute(_id, params) {
-        const { length } = params as { length: number };
-        const state = await loadCycleState();
-        state.cycleLength = length;
-        if (state.startDate) {
-          const profile = await loadAgentProfile("main");
-          const day = getCycleDay(state.startDate, length);
-          if (day && profile) await updateCycleBlockInEmotions(day, resolvePhaseForDay(day, profile, length)!, { user: userName, ...(profile.placeholders || {}) });
-        }
-        await saveCycleState(state);
-        return { content: [{ type: "text", text: `Zykluslaenge auf ${length} Tage gesetzt.` }] };
-      }
-    }, { name: "cycle_set_length" });
-
     api.registerCli(({ program }) => {
       const evo = program.command("evolution");
-      evo.command("growth").action(async () => console.log(await readRecentGrowth()));
-      evo.command("emotions").action(async () => console.log(await readEmotionalState()));
+      evo.command("growth").action(async () => {
+        const content = await fs.readFile(join(defaultWorkspace, "GROWTH.md"), "utf-8");
+        console.log(content);
+      });
     }, { commands: ["evolution"] });
 
     api.registerService({
