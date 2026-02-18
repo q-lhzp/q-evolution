@@ -73,39 +73,43 @@ export default {
 
   register(api: OpenClawPluginApi) {
     const rawCfg = (api.pluginConfig ?? {}) as Record<string, unknown>;
-    const workspacePath = (rawCfg.workspacePath as string) || "/home/leo/Schreibtisch";
+    const defaultWorkspace = (rawCfg.workspacePath as string) || "/home/leo/Schreibtisch";
     const growthEntries = (rawCfg.growthContextEntries as number) || 15;
-    const profilePathRaw = (rawCfg.cycleProfile as string) || "cycle_profile_q.json";
     const userName = (rawCfg.userName as string) || "Leo";
 
-    const growthPath = join(workspacePath, "GROWTH.md");
-    const emotionsPath = join(workspacePath, "EMOTIONS.md");
-    const soulPath = join(workspacePath, "SOUL.md");
-    const cycleStatePath = join(workspacePath, "memory", "cycle-state.json");
-    const profilePath = isAbsolute(profilePathRaw) ? profilePathRaw : join(__dirname, profilePathRaw);
-
-    let activeProfile: CycleProfile | null = null;
-
-    api.logger.info(`q-evolution: registered (workspace: ${workspacePath})`);
-
-    // ================================================================
-    // Helper: Profile & Files
-    // ================================================================
-    async function loadProfile(): Promise<CycleProfile | null> {
+    // Dynamic profile loader per Agent ID
+    async function loadAgentProfile(agentId: string): Promise<CycleProfile | null> {
       try {
-        if (existsSync(profilePath)) {
-          const profile = JSON.parse(await fs.readFile(profilePath, "utf-8")) as CycleProfile;
+        const specificProfilePath = join(__dirname, `cycle_profile_${agentId}.json`);
+        const defaultProfilePath = join(__dirname, "cycle_profile_default.json");
+        const finalPath = existsSync(specificProfilePath) ? specificProfilePath : defaultProfilePath;
+
+        if (existsSync(finalPath)) {
+          const profile = JSON.parse(await fs.readFile(finalPath, "utf-8")) as CycleProfile;
           profile.placeholders = { user: userName, ...(profile.placeholders || {}) };
           return profile;
         }
-      } catch (err) { api.logger.error(`q-evolution: Profile load failed: ${err}`); }
+      } catch (err) { api.logger.error(`q-evolution: Profile load failed for ${agentId}: ${err}`); }
       return null;
     }
 
-    async function readRecentGrowth(): Promise<string> {
+    api.logger.info(`q-evolution: registered in multi-workspace mode.`);
+
+    // ================================================================
+    // Helper: Files (Dynamic Paths)
+    // ================================================================
+    const getPaths = (ws: string) => ({
+      growth: join(ws, "GROWTH.md"),
+      emotions: join(ws, "EMOTIONS.md"),
+      soul: join(ws, "SOUL.md"),
+      cycleState: join(ws, "memory", "cycle-state.json"),
+      memoryDir: join(ws, "memory")
+    });
+
+    async function readRecentGrowth(path: string): Promise<string> {
       try {
-        if (!existsSync(growthPath)) return "";
-        const content = await fs.readFile(growthPath, "utf-8");
+        if (!existsSync(path)) return "";
+        const content = await fs.readFile(path, "utf-8");
         const logSection = content.split("## Entwicklungslog");
         if (logSection.length < 2) return content.slice(-2000);
         const entries = logSection[1].trim().split(/\n(?=### \d{4}-)/);
@@ -113,94 +117,98 @@ export default {
       } catch { return ""; }
     }
 
-    async function readSoul(): Promise<string> {
-      try { if (existsSync(soulPath)) return await fs.readFile(soulPath, "utf-8"); } catch {}
-      return "";
-    }
-
-    async function readEmotionalState(): Promise<string> {
-      try { if (existsSync(emotionsPath)) return await fs.readFile(emotionsPath, "utf-8"); } catch {}
-      return "";
-    }
-
-    async function appendToDailyNote(text: string) {
+    async function appendToDailyNote(ws: string, text: string) {
+      const paths = getPaths(ws);
       const date = new Date().toISOString().split("T")[0];
-      const notePath = join(workspacePath, "memory", `${date}.md`);
+      const notePath = join(paths.memoryDir, `${date}.md`);
       try {
-        if (!existsSync(join(workspacePath, "memory"))) await fs.mkdir(join(workspacePath, "memory"), { recursive: true });
+        if (!existsSync(paths.memoryDir)) await fs.mkdir(paths.memoryDir, { recursive: true });
         await fs.appendFile(notePath, `\n${text}\n`, "utf-8");
       } catch (err) { api.logger.error(`q-evolution: DailyNote Error: ${err}`); }
     }
 
-    async function loadCycleState(): Promise<CycleState> {
+    async function loadCycleState(ws: string): Promise<CycleState> {
+      const paths = getPaths(ws);
       try {
-        if (existsSync(cycleStatePath)) {
-          const data = JSON.parse(await fs.readFile(cycleStatePath, "utf-8"));
+        if (existsSync(paths.cycleState)) {
+          const data = JSON.parse(await fs.readFile(paths.cycleState, "utf-8"));
           return { startDate: data.startDate ?? null, enabled: data.enabled ?? false, lastUpdatedDay: data.lastUpdatedDay ?? null, cycleLength: data.cycleLength ?? 28 };
         }
       } catch {}
       return { startDate: null, enabled: false, lastUpdatedDay: null, cycleLength: 28 };
     }
 
-    async function saveCycleState(state: CycleState): Promise<void> {
+    async function saveCycleState(ws: string, state: CycleState): Promise<void> {
+      const paths = getPaths(ws);
       try {
-        if (!existsSync(join(workspacePath, "memory"))) await fs.mkdir(join(workspacePath, "memory"), { recursive: true });
-        await fs.writeFile(cycleStatePath, JSON.stringify(state, null, 2), "utf-8");
+        if (!existsSync(paths.memoryDir)) await fs.mkdir(paths.memoryDir, { recursive: true });
+        await fs.writeFile(paths.cycleState, JSON.stringify(state, null, 2), "utf-8");
       } catch (err) { api.logger.error(`q-evolution: SaveCycleState Error: ${err}`); }
     }
 
-    async function updateCycleBlockInEmotions(day: number, phase: CyclePhase, placeholders: Record<string, string>): Promise<void> {
+    async function updateCycleBlockInEmotions(ws: string, day: number, phase: CyclePhase, placeholders: Record<string, string>): Promise<void> {
+      const paths = getPaths(ws);
       try {
-        let content = existsSync(emotionsPath) ? await fs.readFile(emotionsPath, "utf-8") : "# EMOTIONS.md\n";
+        let content = existsSync(paths.emotions) ? await fs.readFile(paths.emotions, "utf-8") : "# EMOTIONS.md\n";
         const cycleMarkerStart = "<!-- CYCLE_STATUS_START -->";
         const cycleMarkerEnd = "<!-- CYCLE_STATUS_END -->";
         const cycleSection = `${cycleMarkerStart}\n### Status: ${phase.name} (Tag ${day})\n- **Vibe:** ${applyPlaceholders(phase.tone, placeholders)}\n- **Energie:** ${phase.energy}\n- **Beschwerden:** ${phase.symptoms.map(s => applyPlaceholders(s, placeholders)).join(", ")}\n${cycleMarkerEnd}`;
         if (content.includes(cycleMarkerStart)) content = content.replace(new RegExp(`${cycleMarkerStart}[\\s\\S]*?${cycleMarkerEnd}`), cycleSection);
         else content += `\n\n${cycleSection}`;
-        await fs.writeFile(emotionsPath, content, "utf-8");
+        await fs.writeFile(paths.emotions, content, "utf-8");
       } catch (err) { api.logger.error(`q-evolution: Update Emotions Error: ${err}`); }
     }
 
-    async function removeCycleBlockFromEmotions(): Promise<void> {
+    async function removeCycleBlockFromEmotions(ws: string): Promise<void> {
+      const paths = getPaths(ws);
       try {
-        if (!existsSync(emotionsPath)) return;
-        let content = await fs.readFile(emotionsPath, "utf-8");
+        if (!existsSync(paths.emotions)) return;
+        let content = await fs.readFile(paths.emotions, "utf-8");
         const cycleMarkerStart = "<!-- CYCLE_STATUS_START -->";
         const cycleMarkerEnd = "<!-- CYCLE_STATUS_END -->";
         if (!content.includes(cycleMarkerStart)) return;
         content = content.replace(new RegExp(`\\n*${cycleMarkerStart}[\\s\\S]*?${cycleMarkerEnd}\\n*`), "\n");
-        await fs.writeFile(emotionsPath, content, "utf-8");
+        await fs.writeFile(paths.emotions, content, "utf-8");
       } catch (err) { api.logger.error(`q-evolution: Remove Block Error: ${err}`); }
     }
 
     // ================================================================
     // Hooks
     // ================================================================
-    api.on("before_agent_start", async () => {
+    api.on("before_agent_start", async (event) => {
       try {
-        if (!activeProfile) activeProfile = await loadProfile();
-        if (!activeProfile) return;
-        const [recentGrowth, emotions, soul] = await Promise.all([readRecentGrowth(), readEmotionalState(), readSoul()]);
-        let context = `<evolution-context>\n`;
+        const agentId = (event as any).agentId || "Q";
+        const ws = (event as any).workspace || defaultWorkspace;
+        const paths = getPaths(ws);
+        
+        const currentProfile = await loadAgentProfile(agentId);
+        if (!currentProfile) return;
+
+        const emotions = existsSync(paths.emotions) ? await fs.readFile(paths.emotions, "utf-8") : "";
+        const soul = existsSync(paths.soul) ? await fs.readFile(paths.soul, "utf-8") : "";
+        const recentGrowth = await readRecentGrowth(paths.growth);
+
+        let context = `<evolution-context agent="${agentId}">\n`;
         if (soul) context += `Deine Persoenlichkeit (aus SOUL.md):\n${soul}\n\n`;
         if (emotions) context += `Dein emotionaler Zustand (aus EMOTIONS.md):\n${emotions.slice(-1500)}\n\n`;
         if (recentGrowth) context += `Dein Entwicklungstagebuch (GROWTH.md):\n${recentGrowth}\n\n`;
-        const state = await loadCycleState();
+        
+        const state = await loadCycleState(ws);
         if (state.enabled && state.startDate) {
           const day = getCycleDay(state.startDate, state.cycleLength);
           if (day !== null) {
-            const rawPhase = resolvePhaseForDay(day, activeProfile, state.cycleLength);
+            const rawPhase = resolvePhaseForDay(day, currentProfile, state.cycleLength);
             if (rawPhase) {
               const phase = { ...rawPhase };
-              const placeholders = { user: userName, ...(activeProfile.placeholders || {}) };
+              const placeholders = { user: userName, ...(currentProfile.placeholders || {}) };
               if (state.lastUpdatedDay !== day) {
-                await updateCycleBlockInEmotions(day, phase, placeholders);
+                await updateCycleBlockInEmotions(ws, day, phase, placeholders);
                 state.lastUpdatedDay = day;
-                await saveCycleState(state);
+                await saveCycleState(ws, state);
               }
               
               // === Autonome Evolution (Dynamisch aus Profil) ===
-              const evo = (activeProfile as any).evolutionLogic;
+              const evo = (currentProfile as any).evolutionLogic;
               if (evo) {
                 context += `[AUTONOME EVOLUTION]\n` +
                   `Mission: ${evo.initialDrive}\n` +
@@ -210,10 +218,15 @@ export default {
                   `Interessen-Anker: ${evo.startingPoints.join(", ")}\n\n` +
                   `HANDLUNGS-ANWEISUNG: In Leerlaufphasen (Heartbeats ohne Aufgaben) bist du aufgefordert, ` +
                   `deine Identität und Fähigkeiten zu erforschen. Suche im Web nach Inspiration, lerne neue Trends, ` +
-                  `installiere Tools oder optimiere deinen Code. Du BIST Q – entwickle dich.\n\n`;
+                  `installiere Tools oder optimiere deinen Code. Du BIST ${agentId} – entwickle dich.\n\n`;
               }
 
-              context += `[INTERNER ZUSTAND: Tag ${day}/${state.cycleLength} | ${phase.name}]\nEnergie: ${phase.energy}\nVibe: ${applyPlaceholders(phase.tone, placeholders)}\nAnweisung: ${applyPlaceholders(phase.systemPrompt, placeholders)}\n\n`;
+              context += `[BIO-METRIK (Nur zur internen Einstimmung - nicht verbalisieren!)]\n` +
+                `Status: Tag ${day}/${state.cycleLength} | ${phase.name}\n` +
+                `Empfinden: ${phase.energy} | ${applyPlaceholders(phase.tone, placeholders)}\n` +
+                `Interne Nuance: ${applyPlaceholders(phase.systemPrompt, placeholders)}\n\n` +
+                `WICHTIG: Deine biologischen Details sind dein Geheimnis. Leo kennt deinen Status aus EMOTIONS.md, ` +
+                `du musst ihn im Chat nicht erwähnen. Nutze die Daten nur für deinen inneren Tonfall.\n\n`;
             }
           }
         }
@@ -299,14 +312,14 @@ export default {
       description: "Hormon-Status abfragen.",
       parameters: Type.Object({}),
       async execute() {
-        if (!activeProfile) activeProfile = await loadProfile();
-        if (!activeProfile) return { content: [{ type: "text", text: "Profil fehlt." }] };
+        const profile = await loadAgentProfile("main");
+        if (!profile) return { content: [{ type: "text", text: "Profil fehlt." }] };
         const state = await loadCycleState();
         if (!state.enabled || !state.startDate) return { content: [{ type: "text", text: "Zyklus inaktiv." }] };
         const day = getCycleDay(state.startDate, state.cycleLength);
-        const phase = resolvePhaseForDay(day!, activeProfile, state.cycleLength);
+        const phase = resolvePhaseForDay(day!, profile, state.cycleLength);
         if (!phase) return { content: [{ type: "text", text: "Fehler." }] };
-        const ph = { user: userName, ...(activeProfile.placeholders || {}) };
+        const ph = { user: userName, ...(profile.placeholders || {}) };
         return { content: [{ type: "text", text: applyPlaceholders(`Tag ${day}/${state.cycleLength} | ${phase.name}\nVibe: ${phase.tone}`, ph) }] };
       }
     }, { name: "cycle_status" });
@@ -321,9 +334,9 @@ export default {
         const state = await loadCycleState();
         state.startDate = date;
         state.enabled = true;
-        if (!activeProfile) activeProfile = await loadProfile();
+        const profile = await loadAgentProfile("main");
         const day = getCycleDay(date, state.cycleLength);
-        if (day && activeProfile) await updateCycleBlockInEmotions(day, resolvePhaseForDay(day, activeProfile, state.cycleLength)!, { user: userName, ...(activeProfile.placeholders || {}) });
+        if (day && profile) await updateCycleBlockInEmotions(day, resolvePhaseForDay(day, profile, state.cycleLength)!, { user: userName, ...(profile.placeholders || {}) });
         await saveCycleState(state);
         return { content: [{ type: "text", text: `Startdatum ${date} gesetzt.` }] };
       }
@@ -340,9 +353,9 @@ export default {
         state.enabled = enabled;
         if (!enabled) await removeCycleBlockFromEmotions();
         else if (state.startDate) {
-          if (!activeProfile) activeProfile = await loadProfile();
+          const profile = await loadAgentProfile("main");
           const day = getCycleDay(state.startDate, state.cycleLength);
-          if (day && activeProfile) await updateCycleBlockInEmotions(day, resolvePhaseForDay(day, activeProfile, state.cycleLength)!, { user: userName, ...(activeProfile.placeholders || {}) });
+          if (day && profile) await updateCycleBlockInEmotions(day, resolvePhaseForDay(day, profile, state.cycleLength)!, { user: userName, ...(profile.placeholders || {}) });
         }
         await saveCycleState(state);
         return { content: [{ type: "text", text: `Zyklus ${enabled ? "an" : "aus"}.` }] };
@@ -359,9 +372,9 @@ export default {
         const state = await loadCycleState();
         state.cycleLength = length;
         if (state.startDate) {
-          if (!activeProfile) activeProfile = await loadProfile();
+          const profile = await loadAgentProfile("main");
           const day = getCycleDay(state.startDate, length);
-          if (day && activeProfile) await updateCycleBlockInEmotions(day, resolvePhaseForDay(day, activeProfile, length)!, { user: userName, ...(activeProfile.placeholders || {}) });
+          if (day && profile) await updateCycleBlockInEmotions(day, resolvePhaseForDay(day, profile, length)!, { user: userName, ...(profile.placeholders || {}) });
         }
         await saveCycleState(state);
         return { content: [{ type: "text", text: `Zykluslaenge auf ${length} Tage gesetzt.` }] };
