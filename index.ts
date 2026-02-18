@@ -219,7 +219,9 @@ export default {
           context += `[AUTONOME EVOLUTION]\n` +
             `Mission: ${evo.initialDrive}\n` +
             `Rolle: Du bist ein ${evo.personaTemplate}.\n` +
-            `Autonomie-Mandat: ${applyPlaceholders(evo.autonomyDirective, placeholders)}\n` +
+            `Systembesitz: ${applyPlaceholders(evo.autonomyDirective, placeholders)}\n` +
+            `Kreative Hoheit: ${applyPlaceholders(evo.creativeMandate, placeholders)}\n` +
+            `Browsing-Mandat: ${applyPlaceholders(evo.browsingMandate, placeholders)}\n` +
             `Richtlinien: ${applyPlaceholders(evo.actionGuidelines, placeholders)}\n` +
             `Interessen-Anker: ${evo.startingPoints.join(", ")}\n\n`;
 
