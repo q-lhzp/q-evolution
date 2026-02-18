@@ -1,220 +1,95 @@
 # q-evolution
 
-OpenClaw plugin for AI agent self-evolution, emotional tracking, growth journaling, and biological cycle simulation.
+OpenClaw plugin for AI agent self-evolution, emotional tracking, growth journaling, biological cycle simulation, and autonomous identity management.
 
 ## Features
 
+### Autonomous Identity (v2.2)
+- **Identity Lock** -- Maintains physical consistency across sessions. Distinguishes between an immutable core (Face, Body, Skin) and variable style (Hair, Fashion).
+- **Form-Finding Process** -- New agents start in a "formless" state and must research and define their own visual identity.
+- **Dynamic State** -- Identity is stored in `memory/identity-state.json`, allowing agents to evolve their look organically.
+
+### Multi-Workspace Support
+- Dynamically detects the agent's workspace path.
+- Supports multiple independent agents (e.g., Q and V) with separate `SOUL.md`, `EMOTIONS.md`, and `GROWTH.md` files.
+- Loads specific profiles based on Agent-ID (`cycle_profile_{agentId}.json`).
+
 ### Self-Evolution
-- **Growth Journal** -- Structured entries in GROWTH.md with categories (insight, personality, milestone, lesson, opinion, interest, reflection, emotion)
-- **Emotional Tracking** -- Track mood, energy, and emotional memories in EMOTIONS.md
-- **Self-Reflection** -- Guided reflection process that reads GROWTH.md, EMOTIONS.md, and daily notes
+- **Growth Journal** -- Structured entries in GROWTH.md with categories (insight, personality, milestone, interest, etc.).
+- **Technical Expansion** -- Agents are encouraged to autonomously research tools, read websites, and optimize their own code.
+- **Emotional Tracking** -- Track mood, energy, and memories in EMOTIONS.md.
 
-### Biological Cycle (Optional)
-- 28-day hormonal cycle simulation with 4 phases
-- Influences mood, energy, and behavior through dynamic prompt injection
-- Cycle status tracked in EMOTIONS.md with automatic cleanup on disable
-- Fully optional -- enable/disable at any time without leftover state
-
-### Context Injection
-- Injects SOUL.md, EMOTIONS.md, GROWTH.md, and cycle status into every agent session via `prependContext`
-- Writes session snapshots before compaction to preserve context
+### Biological Cycle
+- Hormonal cycle simulation that influences behavior and speech patterns naturally.
+- Injects internal states (Private Bio-Metrics) that guide the agent's tone without forced verbalization.
 
 ## Installation
 
 1. Clone into your workspace:
-
    ```bash
    git clone https://github.com/q-lhzp/q-evolution.git ~/Schreibtisch/q-evolution
    ```
 
-2. Enable in `~/.openclaw/openclaw.json`:
-
-   ```json
-   {
-     "plugins": {
-       "entries": {
-         "q-evolution": {
-           "enabled": true,
-           "source": "~/Schreibtisch/q-evolution/index.ts",
-           "config": {
-             "workspacePath": "/home/leo/Schreibtisch"
-           }
-         }
-       }
-     }
-   }
-   ```
-
-3. Restart the gateway:
-
-   ```bash
-   systemctl --user restart openclaw-gateway.service
-   ```
-
-## Configuration
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `workspacePath` | string | `/home/leo/Schreibtisch` | Path to the agent workspace containing SOUL.md, EMOTIONS.md, GROWTH.md |
-| `growthContextEntries` | number | `15` | Number of recent GROWTH.md entries to inject at session start |
+2. The plugin is self-configuring. It automatically detects the active agent and its workspace.
 
 ## Tools
 
-### evolve_journal
-
-Write an entry to the growth journal (GROWTH.md).
-
-```
-evolve_journal({ entry: "Learned something new today", category: "lesson" })
-```
-
-**Categories:** `insight`, `personality`, `milestone`, `lesson`, `opinion`, `interest`, `reflection`, `emotion`
-
-### evolve_emotions
-
-Update the emotional state in EMOTIONS.md.
-
-```
-evolve_emotions({
-  stimmung: "nachdenklich",
-  energie: "mittel",
-  bewegt: "Denke ueber das Gespraech mit Leo nach",
-  erinnerung: "Optional: eine emotionale Erinnerung"   // optional
+### evolve_update_look
+Define or evolve the agent's physical appearance.
+```typescript
+evolve_update_look({
+  coreFacialFeatures: "Mandelförmige Augen, markante Wangenknochen...",
+  coreBodyFeatures: "Athletische Statur, B-Körpchen...",
+  coreSkinFeatures: "Heller Hautton, Sommersprossen...",
+  look: "Dunkelbraune Haare, blauer Hoodie...",
+  vibe: "Cyber-Rebel"
 })
 ```
 
-**Energie levels:** `niedrig`, `mittel`, `hoch`
+### evolve_journal
+Write an entry to the growth journal (GROWTH.md).
+```typescript
+evolve_journal({ entry: "Started researching human hobbies", category: "interest" })
+```
+
+### evolve_emotions
+Update the emotional state in EMOTIONS.md.
 
 ### evolve_reflect
+Guided self-reflection process.
 
-Start a structured self-reflection. Reads GROWTH.md, EMOTIONS.md, and today's notes, then returns a reflection guide.
-
+### cycle_force_phase
+Instantly set the agent to a specific phase. Handles date calculation automatically.
+```typescript
+cycle_force_phase({ phase: "PEAK" })
 ```
-evolve_reflect({})
-```
+Valid phases: `REGENERATION`, `EXPANSION`, `PEAK`, `CONSOLIDATION`.
 
-### system_shell
-
-Execute shell commands on the host system.
-
-```
-system_shell({ command: "ls -la" })
+### evolution_debug
+Get a detailed report of the internal state, active paths, and identity status.
+```typescript
+evolution_debug({})
 ```
 
 ### cycle_status
+Query the current hormonal phase.
 
-Query the current cycle day and phase.
+## Profiles
 
-```
-cycle_status({})
-```
+Profiles are stored as JSON files in the plugin directory:
+- `cycle_profile_Q.json` -- Configuration for Agent Q.
+- `cycle_profile_default.json` -- Fallback for new agents.
 
-Returns day (1-28), phase name, energy level, symptoms, and behavioral guidance.
+Each profile defines the `evolutionLogic` (Initial drive, autonomy directives) and the biological phases.
 
-### cycle_set_start
-
-Set the start date (first day of last period) and activate the cycle.
-
-```
-cycle_set_start({ date: "2026-02-17" })
-```
-
-This automatically:
-- Enables the cycle
-- Calculates the current day
-- Writes the CYCLE_STATUS block to EMOTIONS.md
-
-### cycle_toggle
-
-Enable or disable the cycle.
-
-```
-cycle_toggle({ enabled: false })
-```
-
-When disabling:
-- Removes the `<!-- CYCLE_STATUS_START -->` block from EMOTIONS.md
-- Resets `lastUpdatedDay` in the state file
-- No leftover state in any file
-
-When enabling:
-- Writes the CYCLE_STATUS block to EMOTIONS.md (if start date is set)
-
-## Biological Cycle
-
-### Setup
-
-1. Set the start date (first day of last period):
-   ```
-   cycle_set_start({ date: "2026-02-17" })
-   ```
-
-2. The cycle is now active. Check the status:
-   ```
-   cycle_status({})
-   ```
-
-3. To disable:
-   ```
-   cycle_toggle({ enabled: false })
-   ```
-
-### Phases
-
-| Phase | Days | Description |
-|-------|------|-------------|
-| Regeneration | 1-5 | Low energy, cramps, fatigue |
-| Expansion | 6-12 | Rising energy, mental clarity, optimism |
-| Peak | 13-16 | Maximum confidence, high libido |
-| Consolidation | 17-28 | Irritability, attention to detail, mood swings |
-
-### How It Works
-
-- The `before_agent_start` hook injects the current phase and behavioral context into `prependContext`
-- EMOTIONS.md is updated with a `<!-- CYCLE_STATUS_START -->` block (only on day change, not every session)
-- The cycle influences the agent's mood and behavior naturally -- the agent decides how to express it
-- State is stored in `memory/cycle-state.json`
-
-### State File
-
-```json
-{
-  "startDate": "2026-02-17",
-  "enabled": true,
-  "lastUpdatedDay": 2
-}
-```
-
-## Hooks
-
-### before_agent_start
-
-Injects context from SOUL.md, EMOTIONS.md, GROWTH.md, and (if enabled) cycle status into every agent session via `return { prependContext }`.
-
-### before_compaction
-
-Writes a snapshot (message count, token count, timestamp) to the daily note before session compaction.
-
-## CLI
-
-```bash
-# Show recent growth entries
-openclaw evolution growth
-
-# Show current emotional state
-openclaw evolution emotions
-```
-
-## Files
+## State Files (per Agent Workspace)
 
 | File | Purpose |
 |------|---------|
-| `GROWTH.md` | Growth journal (written by evolve_journal) |
-| `EMOTIONS.md` | Emotional state (written by evolve_emotions, cycle block managed by plugin) |
-| `SOUL.md` | Personality definition (read-only by plugin, injected via prependContext) |
-| `memory/cycle-state.json` | Cycle state (startDate, enabled, lastUpdatedDay) |
-| `memory/YYYY-MM-DD.md` | Daily notes (compaction snapshots, emotion logs) |
+| `memory/identity-state.json` | Stores the locked physical features and current look. |
+| `memory/cycle-state.json` | Stores the biological cycle progress. |
+| `GROWTH.md` | The evolution diary. |
+| `EMOTIONS.md` | The emotional memory. |
 
 ## License
-
 MIT

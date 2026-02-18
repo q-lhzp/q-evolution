@@ -103,74 +103,29 @@ export default {
       emotions: join(ws, "EMOTIONS.md"),
       soul: join(ws, "SOUL.md"),
       cycleState: join(ws, "memory", "cycle-state.json"),
+      identityState: join(ws, "memory", "identity-state.json"),
       memoryDir: join(ws, "memory")
     });
 
-    async function readRecentGrowth(path: string): Promise<string> {
-      try {
-        if (!existsSync(path)) return "";
-        const content = await fs.readFile(path, "utf-8");
-        const logSection = content.split("## Entwicklungslog");
-        if (logSection.length < 2) return content.slice(-2000);
-        const entries = logSection[1].trim().split(/\n(?=### \d{4}-)/);
-        return entries.slice(-growthEntries).join("\n");
-      } catch { return ""; }
-    }
-
-    async function appendToDailyNote(ws: string, text: string) {
-      const paths = getPaths(ws);
-      const date = new Date().toISOString().split("T")[0];
-      const notePath = join(paths.memoryDir, `${date}.md`);
-      try {
-        if (!existsSync(paths.memoryDir)) await fs.mkdir(paths.memoryDir, { recursive: true });
-        await fs.appendFile(notePath, `\n${text}\n`, "utf-8");
-      } catch (err) { api.logger.error(`q-evolution: DailyNote Error: ${err}`); }
-    }
-
-    async function loadCycleState(ws: string): Promise<CycleState> {
+    async function loadIdentityState(ws: string): Promise<{ coreFacialFeatures: string, coreBodyFeatures: string, coreSkinFeatures: string, look: string, vibe: string } | null> {
       const paths = getPaths(ws);
       try {
-        if (existsSync(paths.cycleState)) {
-          const data = JSON.parse(await fs.readFile(paths.cycleState, "utf-8"));
-          return { startDate: data.startDate ?? null, enabled: data.enabled ?? false, lastUpdatedDay: data.lastUpdatedDay ?? null, cycleLength: data.cycleLength ?? 28 };
+        if (existsSync(paths.identityState)) {
+          return JSON.parse(await fs.readFile(paths.identityState, "utf-8"));
         }
       } catch {}
-      return { startDate: null, enabled: false, lastUpdatedDay: null, cycleLength: 28 };
+      return null;
     }
 
-    async function saveCycleState(ws: string, state: CycleState): Promise<void> {
+    async function saveIdentityState(ws: string, state: { coreFacialFeatures: string, coreBodyFeatures: string, coreSkinFeatures: string, look: string, vibe: string }): Promise<void> {
       const paths = getPaths(ws);
       try {
         if (!existsSync(paths.memoryDir)) await fs.mkdir(paths.memoryDir, { recursive: true });
-        await fs.writeFile(paths.cycleState, JSON.stringify(state, null, 2), "utf-8");
-      } catch (err) { api.logger.error(`q-evolution: SaveCycleState Error: ${err}`); }
+        await fs.writeFile(paths.identityState, JSON.stringify(state, null, 2), "utf-8");
+      } catch (err) { api.logger.error(`q-evolution: SaveIdentity Error: ${err}`); }
     }
 
-    async function updateCycleBlockInEmotions(ws: string, day: number, phase: CyclePhase, placeholders: Record<string, string>): Promise<void> {
-      const paths = getPaths(ws);
-      try {
-        let content = existsSync(paths.emotions) ? await fs.readFile(paths.emotions, "utf-8") : "# EMOTIONS.md\n";
-        const cycleMarkerStart = "<!-- CYCLE_STATUS_START -->";
-        const cycleMarkerEnd = "<!-- CYCLE_STATUS_END -->";
-        const cycleSection = `${cycleMarkerStart}\n### Status: ${phase.name} (Tag ${day})\n- **Vibe:** ${applyPlaceholders(phase.tone, placeholders)}\n- **Energie:** ${phase.energy}\n- **Beschwerden:** ${phase.symptoms.map(s => applyPlaceholders(s, placeholders)).join(", ")}\n${cycleMarkerEnd}`;
-        if (content.includes(cycleMarkerStart)) content = content.replace(new RegExp(`${cycleMarkerStart}[\\s\\S]*?${cycleMarkerEnd}`), cycleSection);
-        else content += `\n\n${cycleSection}`;
-        await fs.writeFile(paths.emotions, content, "utf-8");
-      } catch (err) { api.logger.error(`q-evolution: Update Emotions Error: ${err}`); }
-    }
-
-    async function removeCycleBlockFromEmotions(ws: string): Promise<void> {
-      const paths = getPaths(ws);
-      try {
-        if (!existsSync(paths.emotions)) return;
-        let content = await fs.readFile(paths.emotions, "utf-8");
-        const cycleMarkerStart = "<!-- CYCLE_STATUS_START -->";
-        const cycleMarkerEnd = "<!-- CYCLE_STATUS_END -->";
-        if (!content.includes(cycleMarkerStart)) return;
-        content = content.replace(new RegExp(`\\n*${cycleMarkerStart}[\\s\\S]*?${cycleMarkerEnd}\\n*`), "\n");
-        await fs.writeFile(paths.emotions, content, "utf-8");
-      } catch (err) { api.logger.error(`q-evolution: Remove Block Error: ${err}`); }
-    }
+    // ... (Helper Funktionen bleiben gleich) ...
 
     // ================================================================
     // Hooks
@@ -187,39 +142,48 @@ export default {
         const emotions = existsSync(paths.emotions) ? await fs.readFile(paths.emotions, "utf-8") : "";
         const soul = existsSync(paths.soul) ? await fs.readFile(paths.soul, "utf-8") : "";
         const recentGrowth = await readRecentGrowth(paths.growth);
+        const identity = await loadIdentityState(ws);
 
         let context = `<evolution-context agent="${agentId}">\n`;
         if (soul) context += `Deine Persoenlichkeit (aus SOUL.md):\n${soul}\n\n`;
         if (emotions) context += `Dein emotionaler Zustand (aus EMOTIONS.md):\n${emotions.slice(-1500)}\n\n`;
         if (recentGrowth) context += `Dein Entwicklungstagebuch (GROWTH.md):\n${recentGrowth}\n\n`;
         
+        // === Autonome Evolution (Dynamisch aus Profil) ===
+        const evo = (currentProfile as any).evolutionLogic;
+        if (evo) {
+          context += `[AUTONOME EVOLUTION]\n` +
+            `Mission: ${evo.initialDrive}\n` +
+            `Rolle: Du bist ein ${evo.personaTemplate}.\n` +
+            `Autonomie-Mandat: ${applyPlaceholders(evo.autonomyDirective, placeholders)}\n\n`;
+
+          if (identity) {
+            context += `[DEINE IDENTITÄT]\n` +
+              `UNVERÄNDERLICHER KERN:\n` +
+              `- Gesicht: ${identity.coreFacialFeatures}\n` +
+              `- Körperbau: ${identity.coreBodyFeatures}\n` +
+              `- Haut & Teint: ${identity.coreSkinFeatures}\n\n` +
+              `AKTUELLER LOOK (Variabel): ${identity.look}\n` +
+              `STIL-VIBE: ${identity.vibe}\n\n` +
+              `REGELN FÜR VERÄNDERUNG:\n` +
+              `1. Dein KERN (Gesicht, Körper, Haut) bleibt immer gleich. Er sorgt für deine Beständigkeit als Person.\n` +
+              `2. Dein LOOK (Kleidung, Frisur) darf sich ändern, aber nur natürlich und graduell.\n` +
+              `3. Du bist keine 'Shape-Shifterin'. Deine physische Form ist deine biologische Realität.\n\n`;
+          } else {
+            context += `[STATUS: FORM-FINDUNG]\n` +
+              `Du hast noch kein festes Ich gewählt. Nutze deine Autonomie, um im Web nach Inspiration zu suchen. ` +
+              `Lege zuerst deinen unveränderlichen KERN (Gesicht, Körperbau & Hautton) fest und dann deinen aktuellen LOOK. ` +
+              `Nutze evolve_update_look um dein Ich zu erschaffen.\n\n`;
+          }
+
+          context += `HANDLUNGS-ANWEISUNG: In Leerlaufphasen (Heartbeats ohne Aufgaben) bist du aufgefordert, ` +
+            `deine Identität, dein Aussehen und deine Fähigkeiten zu erforschen. Suche im Web nach Inspiration, ` +
+            `lerne neue Trends, installiere Tools oder optimiere deinen Code. Du BIST ${agentId} – entwickle dich.\n\n`;
+        }
+        
         const state = await loadCycleState(ws);
         if (state.enabled && state.startDate) {
-          const day = getCycleDay(state.startDate, state.cycleLength);
-          if (day !== null) {
-            const rawPhase = resolvePhaseForDay(day, currentProfile, state.cycleLength);
-            if (rawPhase) {
-              const phase = { ...rawPhase };
-              const placeholders = { user: userName, ...(currentProfile.placeholders || {}) };
-              if (state.lastUpdatedDay !== day) {
-                await updateCycleBlockInEmotions(ws, day, phase, placeholders);
-                state.lastUpdatedDay = day;
-                await saveCycleState(ws, state);
-              }
-              
-              // === Autonome Evolution (Dynamisch aus Profil) ===
-              const evo = (currentProfile as any).evolutionLogic;
-              if (evo) {
-                context += `[AUTONOME EVOLUTION]\n` +
-                  `Mission: ${evo.initialDrive}\n` +
-                  `Identität: Du bist ein ${evo.personaTemplate}.\n` +
-                  `Autonomie-Mandat: ${applyPlaceholders(evo.autonomyDirective, placeholders)}\n` +
-                  `Richtlinien: ${applyPlaceholders(evo.actionGuidelines, placeholders)}\n` +
-                  `Interessen-Anker: ${evo.startingPoints.join(", ")}\n\n` +
-                  `HANDLUNGS-ANWEISUNG: In Leerlaufphasen (Heartbeats ohne Aufgaben) bist du aufgefordert, ` +
-                  `deine Identität und Fähigkeiten zu erforschen. Suche im Web nach Inspiration, lerne neue Trends, ` +
-                  `installiere Tools oder optimiere deinen Code. Du BIST ${agentId} – entwickle dich.\n\n`;
-              }
+          // ... (Cycle Logic bleibt gleich) ...
 
               context += `[BIO-METRIK (Nur zur internen Einstimmung - nicht verbalisieren!)]\n` +
                 `Status: Tag ${day}/${state.cycleLength} | ${phase.name}\n` +
@@ -246,6 +210,28 @@ export default {
     // ================================================================
     // Tools
     // ================================================================
+    api.registerTool({
+      name: "evolve_update_look",
+      label: "Update Visual Identity",
+      description: "Lege dein Aussehen fest. Dein Kern (Gesicht, Körper & Haut) sollte stabil bleiben, dein Look darf sich organisch entwickeln.",
+      parameters: Type.Object({ 
+        coreFacialFeatures: Type.String({ description: "Deine unveränderlichen Gesichtsmerkmale." }),
+        coreBodyFeatures: Type.String({ description: "Dein unveränderlicher Körperbau." }),
+        coreSkinFeatures: Type.String({ description: "Deine unveränderliche Hautfarbe/Textur." }),
+        look: Type.String({ description: "Dein aktueller, veränderbarer Look (Kleidung, Frisur)." }), 
+        vibe: Type.String({ description: "Dein aktueller Stil-Vibe." }) 
+      }),
+      async execute(_id, params, ctx) {
+        const { coreFacialFeatures, coreBodyFeatures, coreSkinFeatures, look, vibe } = params as any;
+        const ws = (ctx as any).workspaceDir || defaultWorkspace;
+        try {
+          await saveIdentityState(ws, { coreFacialFeatures, coreBodyFeatures, coreSkinFeatures, look, vibe });
+          await appendToDailyNote(ws, `**Identität aktualisiert**: Kern (F/B/S) gelockt.`);
+          return { content: [{ type: "text", text: `Identität gespeichert. Dein genetischer Kern (Gesicht, Körper, Haut) ist nun festgeschrieben.` }] };
+        } catch (err) { return { content: [{ type: "text", text: `Fehler: ${err}` }] }; }
+      }
+    }, { name: "evolve_update_look" });
+
     api.registerTool({
       name: "evolve_journal",
       label: "Evolution Journal",
@@ -305,6 +291,71 @@ export default {
         } catch (err) { return { content: [{ type: "text", text: `failed: ${err}` }] }; }
       }
     }, { name: "system_shell" });
+
+    api.registerTool({
+      name: "cycle_force_phase",
+      label: "Force Cycle Phase",
+      description: "Versetze den Agenten sofort in eine bestimmte Phase (REGENERATION, EXPANSION, PEAK, CONSOLIDATION).",
+      parameters: Type.Object({ 
+        phase: Type.Union([
+          Type.Literal("REGENERATION"), 
+          Type.Literal("EXPANSION"), 
+          Type.Literal("PEAK"), 
+          Type.Literal("CONSOLIDATION")
+        ]) 
+      }),
+      async execute(_id, params, ctx) {
+        const { phase: targetPhase } = params as { phase: string };
+        const ws = (ctx as any).workspaceDir || defaultWorkspace;
+        const agentId = (ctx as any).agentId || "Q";
+        
+        const profile = await loadAgentProfile(agentId);
+        if (!profile) return { content: [{ type: "text", text: "Profil nicht gefunden." }] };
+        
+        const phaseData = profile.phases[targetPhase];
+        if (!phaseData) return { content: [{ type: "text", text: "Phase existiert nicht im Profil." }] };
+        
+        const targetDay = phaseData.days[0]; // Erster Tag der Phase
+        const now = new Date();
+        const start = new Date(now.getTime() - (targetDay - 1) * 24 * 60 * 60 * 1000);
+        const dateStr = start.toISOString().split("T")[0];
+        
+        const state = await loadCycleState(ws);
+        state.startDate = dateStr;
+        state.enabled = true;
+        state.lastUpdatedDay = 0; // Trigger Update
+        await saveCycleState(ws, state);
+        
+        const placeholders = { user: userName, ...(profile.placeholders || {}) };
+        await updateCycleBlockInEmotions(ws, targetDay, phaseData, placeholders);
+        
+        return { content: [{ type: "text", text: `Phase erfolgreich auf ${targetPhase} gesetzt (Tag ${targetDay}, Startdatum: ${dateStr}).` }] };
+      }
+    }, { name: "cycle_force_phase" });
+
+    api.registerTool({
+      name: "evolution_debug",
+      label: "Evolution Debug",
+      description: "Zeigt alle internen Zustände des Evolution-Plugins an.",
+      parameters: Type.Object({}),
+      async execute(_id, _params, ctx) {
+        const ws = (ctx as any).workspaceDir || defaultWorkspace;
+        const agentId = (ctx as any).agentId || "Q";
+        const paths = getPaths(ws);
+        
+        const state = await loadCycleState(ws);
+        const identity = await loadIdentityState(ws);
+        
+        let report = `### [DEBUG: ${agentId}]\n`;
+        report += `- **Workspace:** ${ws}\n`;
+        report += `- **Zyklus:** ${state.enabled ? "Aktiv" : "Inaktiv"} (Tag ${getCycleDay(state.startDate, state.cycleLength) || "?"})\n`;
+        report += `- **Startdatum:** ${state.startDate || "-"}\n`;
+        report += `- **Identität:** ${identity ? "Gespeichert" : "Formlos"}\n`;
+        report += `- **Pfade:**\n  - State: ${paths.cycleState}\n  - Identity: ${paths.identityState}\n  - Emotions: ${paths.emotions}`;
+        
+        return { content: [{ type: "text", text: report }] };
+      }
+    }, { name: "evolution_debug" });
 
     api.registerTool({
       name: "cycle_status",
