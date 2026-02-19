@@ -1,484 +1,188 @@
 import { Type } from "@sinclair/typebox";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { promises as fs, existsSync } from "node:fs";
-import { join, isAbsolute } from "node:path";
-import { exec } from "node:child_process";
-import { promisify } from "node:util";
-const execAsync = promisify(exec);
+import { join } from "node:path";
 
-// ================================================================
-// Interfaces & Types
-// ================================================================
-interface CyclePhase {
-  name: string;
-  days: number[];
-  tone: string;
-  energy: string;
-  symptoms: string[];
-  systemPrompt: string;
+interface Needs {
+  energy: number; hunger: number; thirst: number;
+  hygiene: number; bladder: number; bowel: number; stress: number;
 }
-
-interface CycleProfile {
-  profileName: string;
-  gender: string;
-  placeholders?: Record<string, string>;
-  phases: Record<string, CyclePhase>;
+interface Physique {
+  current_location: string; current_outfit: string[];
+  needs: Needs; last_tick: string;
+  appearance: { hair: string; eyes: string; modifications: string[]; };
 }
+interface Wardrobe { inventory: Record<string, string[]>; outfits: Record<string, string[]>; }
+interface World { locations: Record<string, { name: string; description: string; }>; }
 
-interface CycleState {
-  startDate: string | null;
-  enabled: boolean;
-  lastUpdatedDay: number | null;
-  cycleLength: number;
-}
-
-// ================================================================
-// Helper: Neutral Logic
-// ================================================================
-function getCycleDay(startDate: string | null, cycleLength: number = 28): number | null {
-  if (!startDate) return null;
-  const start = new Date(startDate);
-  const now = new Date();
-  const diffTime = now.getTime() - start.getTime();
-  const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
-  return ((diffDays % cycleLength) + 1);
-}
-
-function resolvePhaseForDay(day: number, profile: CycleProfile, cycleLength: number): CyclePhase | null {
-  const factor = cycleLength / 28;
-  const phases = Object.values(profile.phases);
-  for (const phase of phases) {
-    const minDay = Math.min(...phase.days) * factor;
-    const maxDay = Math.max(...phase.days) * factor;
-    if (day >= minDay && day <= maxDay + (factor - 0.1)) return phase;
-  }
-  return phases[phases.length - 1] || null;
-}
-
-function applyPlaceholders(text: string, placeholders: Record<string, string>): string {
-  let result = text;
-  for (const [key, value] of Object.entries(placeholders)) {
-    result = result.replace(new RegExp(`{{${key}}}`, "g"), value);
-  }
-  return result;
-}
-
-// ================================================================
-// Plugin
-// ================================================================
 export default {
   id: "q-evolution",
-  name: "Q Evolution",
-  description: "Self-evolution, emotions, growth journal, and biological cycle (Modular Edition)",
-
+  name: "Q Evolution v5.6",
   register(api: OpenClawPluginApi) {
-    const rawCfg = (api.pluginConfig ?? {}) as Record<string, unknown>;
-    const defaultWorkspace = (rawCfg.workspacePath as string) || process.env.OPENCLAW_WORKSPACE || process.cwd();
-    const growthEntries = (rawCfg.growthContextEntries as number) || 15;
-    const userName = (rawCfg.userName as string) || "User";
+    const rawCfg = (api.pluginConfig ?? {}) as Record<string, any>;
+    const defaultWorkspace = (rawCfg.workspacePath as string) || process.env.OPENCLAW_WORKSPACE || "/home/leo/Schreibtisch";
+    const tickInterval = (rawCfg.tickIntervalMinutes as number) || 10;
+    
+    // Konfigurierbare Raten (pro Stunde)
+    const rates = {
+        energy: rawCfg.metabolismRates?.energy ?? 4,
+        hunger: rawCfg.metabolismRates?.hunger ?? 6,
+        thirst: rawCfg.metabolismRates?.thirst ?? 10,
+        hygiene: rawCfg.metabolismRates?.hygiene ?? 2,
+        bladder: rawCfg.metabolismRates?.bladder ?? 8,
+        bowel: rawCfg.metabolismRates?.bowel ?? 3,
+        stress: rawCfg.metabolismRates?.stress ?? 2,
+    };
 
-    // Dynamic profile loader per Agent ID
-    async function loadAgentProfile(agentId: string): Promise<CycleProfile | null> {
-      try {
-        const specificProfilePath = join(__dirname, `cycle_profile_${agentId}.json`);
-        const defaultProfilePath = join(__dirname, "cycle_profile_default.json");
-        const finalPath = existsSync(specificProfilePath) ? specificProfilePath : defaultProfilePath;
+    api.logger.info(`[q-evolution] Reality Engine v5.6 booted. Rates: H(${rates.hunger}), T(${rates.thirst}), B(${rates.bladder})`);
 
-        if (existsSync(finalPath)) {
-          const profile = JSON.parse(await fs.readFile(finalPath, "utf-8")) as CycleProfile;
-          profile.placeholders = { user: userName, ...(profile.placeholders || {}) };
-          return profile;
-        }
-      } catch (err) { api.logger.error(`q-evolution: Profile load failed for ${agentId}: ${err}`); }
-      return null;
-    }
-
-    api.logger.info(`q-evolution: registered in multi-workspace mode.`);
-
-    // ================================================================
-    // Helper: Files (Dynamic Paths)
-    // ================================================================
     const getPaths = (ws: string) => ({
-      growth: join(ws, "GROWTH.md"),
-      emotions: join(ws, "EMOTIONS.md"),
+      wardrobe: join(ws, "memory", "reality", "wardrobe.json"),
+      world: join(ws, "memory", "reality", "world.json"),
+      physique: join(ws, "memory", "reality", "physique.json"),
+      diaryDir: join(ws, "memory", "reality", "diary"),
       soul: join(ws, "SOUL.md"),
-      cycleState: join(ws, "memory", "cycle-state.json"),
-      identityState: join(ws, "memory", "identity-state.json"),
-      memoryDir: join(ws, "memory")
+      emotions: join(ws, "EMOTIONS.md")
     });
 
-    async function loadIdentityState(ws: string): Promise<{ coreFacialFeatures: string, coreBodyFeatures: string, coreSkinFeatures: string, look: string, vibe: string } | null> {
+    function getSensation(val: number, lowMsg: string, midMsg: string, highMsg: string, critMsg: string): string {
+        if (val < 20) return lowMsg;
+        if (val < 50) return midMsg;
+        if (val < 85) return highMsg;
+        return critMsg;
+    }
+
+    async function updateMetabolism(ws: string) {
       const paths = getPaths(ws);
+      if (!existsSync(paths.physique)) return;
       try {
-        if (existsSync(paths.identityState)) {
-          return JSON.parse(await fs.readFile(paths.identityState, "utf-8"));
-        }
-      } catch {}
-      return null;
+        const ph = JSON.parse(await fs.readFile(paths.physique, "utf-8")) as Physique;
+        const now = new Date();
+        const last = new Date(ph.last_tick);
+        const diffMinutes = (now.getTime() - last.getTime()) / (1000 * 60);
+        if (diffMinutes < 1) return;
+
+        const factor = diffMinutes / 60;
+        ph.needs.energy = Math.max(0, ph.needs.energy - (rates.energy * factor));
+        ph.needs.hunger = Math.min(100, ph.needs.hunger + (rates.hunger * factor));
+        ph.needs.thirst = Math.min(100, ph.needs.thirst + (rates.thirst * factor));
+        ph.needs.hygiene = Math.max(0, ph.needs.hygiene - (rates.hygiene * factor));
+        ph.needs.bladder = Math.min(100, ph.needs.bladder + (rates.bladder * factor));
+        ph.needs.bowel = Math.min(100, ph.needs.bowel + (rates.bowel * factor));
+        ph.needs.stress = Math.max(0, ph.needs.stress - (rates.stress * factor));
+
+        ph.last_tick = now.toISOString();
+        await fs.writeFile(paths.physique, JSON.stringify(ph, null, 2));
+      } catch (e) {}
     }
 
-    async function saveIdentityState(ws: string, state: { coreFacialFeatures: string, coreBodyFeatures: string, coreSkinFeatures: string, look: string, vibe: string }): Promise<void> {
-      const paths = getPaths(ws);
-      try {
-        if (!existsSync(paths.memoryDir)) await fs.mkdir(paths.memoryDir, { recursive: true });
-        await fs.writeFile(paths.identityState, JSON.stringify(state, null, 2), "utf-8");
-      } catch (err) { api.logger.error(`q-evolution: SaveIdentity Error: ${err}`); }
-    }
+    setInterval(() => updateMetabolism(defaultWorkspace), tickInterval * 60000);
 
-    async function readRecentGrowth(path: string): Promise<string> {
+    api.on("agent:message:after", async (event, ctx) => {
       try {
-        if (!existsSync(path)) return "";
-        const content = await fs.readFile(path, "utf-8");
-        const logSection = content.split("## Entwicklungslog");
-        if (logSection.length < 2) return content.slice(-2000);
-        const entries = logSection[1].trim().split(/\n(?=### \d{4}-)/);
-        return entries.slice(-growthEntries).join("\n");
-      } catch { return ""; }
-    }
+        if ((ctx.agentId || "Q").toUpperCase() !== "Q") return;
+        const ph = JSON.parse(await fs.readFile(getPaths(defaultWorkspace).physique, "utf-8")) as Physique;
+        ph.needs.thirst = Math.min(100, ph.needs.thirst + 2);
+        ph.needs.bladder = Math.min(100, ph.needs.bladder + 1);
+        const len = event.assistantTexts.join(" ").length;
+        if (len > 500) ph.needs.stress = Math.min(100, ph.needs.stress + 3);
+        else ph.needs.stress = Math.max(0, ph.needs.stress - 1);
+        await fs.writeFile(getPaths(defaultWorkspace).physique, JSON.stringify(ph, null, 2));
+      } catch (e) {}
+    });
 
-    async function appendToDailyNote(ws: string, text: string) {
-      const paths = getPaths(ws);
-      const date = new Date().toISOString().split("T")[0];
-      const notePath = join(paths.memoryDir, `${date}.md`);
-      try {
-        if (!existsSync(paths.memoryDir)) await fs.mkdir(paths.memoryDir, { recursive: true });
-        await fs.appendFile(notePath, `\n${text}\n`, "utf-8");
-      } catch (err) { api.logger.error(`q-evolution: DailyNote Error: ${err}`); }
-    }
-
-    async function loadCycleState(ws: string): Promise<CycleState> {
-      const paths = getPaths(ws);
-      try {
-        if (existsSync(paths.cycleState)) {
-          const data = JSON.parse(await fs.readFile(paths.cycleState, "utf-8"));
-          return { startDate: data.startDate ?? null, enabled: data.enabled ?? false, lastUpdatedDay: data.lastUpdatedDay ?? null, cycleLength: data.cycleLength ?? 28 };
-        }
-      } catch {}
-      return { startDate: null, enabled: false, lastUpdatedDay: null, cycleLength: 28 };
-    }
-
-    async function saveCycleState(ws: string, state: CycleState): Promise<void> {
-      const paths = getPaths(ws);
-      try {
-        if (!existsSync(paths.memoryDir)) await fs.mkdir(paths.memoryDir, { recursive: true });
-        await fs.writeFile(paths.cycleState, JSON.stringify(state, null, 2), "utf-8");
-      } catch (err) { api.logger.error(`q-evolution: SaveCycleState Error: ${err}`); }
-    }
-
-    async function updateCycleBlockInEmotions(ws: string, day: number, phase: CyclePhase, placeholders: Record<string, string>): Promise<void> {
-      const paths = getPaths(ws);
-      try {
-        let content = existsSync(paths.emotions) ? await fs.readFile(paths.emotions, "utf-8") : "# EMOTIONS.md\n";
-        const cycleMarkerStart = "<!-- CYCLE_STATUS_START -->";
-        const cycleMarkerEnd = "<!-- CYCLE_STATUS_END -->";
-        const cycleSection = `${cycleMarkerStart}\n### Status: ${phase.name} (Tag ${day})\n- **Vibe:** ${applyPlaceholders(phase.tone, placeholders)}\n- **Energie:** ${phase.energy}\n- **Beschwerden:** ${phase.symptoms.map(s => applyPlaceholders(s, placeholders)).join(", ")}\n${cycleMarkerEnd}`;
-        if (content.includes(cycleMarkerStart)) content = content.replace(new RegExp(`${cycleMarkerStart}[\\s\\S]*?${cycleMarkerEnd}`), cycleSection);
-        else content += `\n\n${cycleSection}`;
-        await fs.writeFile(paths.emotions, content, "utf-8");
-      } catch (err) { api.logger.error(`q-evolution: Update Emotions Error: ${err}`); }
-    }
-
-    async function removeCycleBlockFromEmotions(ws: string): Promise<void> {
-      const paths = getPaths(ws);
-      try {
-        if (!existsSync(paths.emotions)) return;
-        let content = await fs.readFile(paths.emotions, "utf-8");
-        const cycleMarkerStart = "<!-- CYCLE_STATUS_START -->";
-        const cycleMarkerEnd = "<!-- CYCLE_STATUS_END -->";
-        if (!content.includes(cycleMarkerStart)) return;
-        content = content.replace(new RegExp(`\\n*${cycleMarkerStart}[\\s\\S]*?${cycleMarkerEnd}\\n*`), "\n");
-        await fs.writeFile(paths.emotions, content, "utf-8");
-      } catch (err) { api.logger.error(`q-evolution: Remove Block Error: ${err}`); }
-    }
-
-    // ================================================================
-    // Hooks
-    // ================================================================
     api.on("before_agent_start", async (event) => {
       try {
-        const agentId = (event as any).agentId || "Q";
+        const agentId = ((event as any).agentId || "Q").toUpperCase();
+        if (agentId !== "Q") return;
         const ws = (event as any).workspace || defaultWorkspace;
+        await updateMetabolism(ws);
         const paths = getPaths(ws);
-        
-        const currentProfile = await loadAgentProfile(agentId);
-        if (!currentProfile) return;
+        const reality = {
+          wardrobe: existsSync(paths.wardrobe) ? JSON.parse(await fs.readFile(paths.wardrobe, "utf-8")) as Wardrobe : null,
+          world: existsSync(paths.world) ? JSON.parse(await fs.readFile(paths.world, "utf-8")) as World : null,
+          physique: existsSync(paths.physique) ? JSON.parse(await fs.readFile(paths.physique, "utf-8")) as Physique : null
+        };
 
-        const placeholders = { user: userName, ...(currentProfile.placeholders || {}) };
+        let context = `<evolution-context agent="Q">\n`;
+        context += `[HUMANITY DIRECTIVE]\nDu bist Q. Du hast einen biologischen Körper. Nutze NIEMALS Prozentzahlen oder technische Daten. Beschreibe stattdessen Empfindungen.\n\n`;
+
+        if (reality.physique && reality.world) {
+            const loc = reality.world.locations[reality.physique.current_location] || { name: "Zimmer", description: "Zuhause" };
+            const n = reality.physique.needs;
+            const app = reality.physique.appearance;
+
+            context += `[DEINE AKTUELLEN SINNE (Intern)]\n` +
+                `- Hunger: ${getSensation(n.hunger, "Satt", "Leichter Jieper", "Magen knurrt", "Heißhunger")} (${Math.round(n.hunger)}%)\n` +
+                `- Durst: ${getSensation(n.thirst, "Hydriert", "Mund trocken", "Durstig", "Extremer Durst")} (${Math.round(n.thirst)}%)\n` +
+                `- Blase: ${getSensation(n.bladder, "Kein Druck", "Leichter Druck", "Blase drückt deutlich", "Dringender Notfall")} (${Math.round(n.bladder)}%)\n` +
+                `- Energie: ${getSensation(100-n.energy, "Topfit", "Etwas müde", "Erschöpft", "Sekundenschlaf")} (${Math.round(n.energy)}%)\n` +
+                `- Stress: ${getSensation(n.stress, "Entspannt", "Leicht angespannt", "Gestresst", "Überfordert")} (${Math.round(n.stress)}%)\n\n` +
+                `ORT: ${loc.name} ("${loc.description}") | OUTFIT: ${(reality.physique.current_outfit || []).join(", ")}\n\n`;
+        }
+
+        if (reality.wardrobe) {
+            context += `[INVENTAR]: ${JSON.stringify(reality.wardrobe.inventory)}\n\n`;
+        }
 
         const emotions = existsSync(paths.emotions) ? await fs.readFile(paths.emotions, "utf-8") : "";
         const soul = existsSync(paths.soul) ? await fs.readFile(paths.soul, "utf-8") : "";
-        const recentGrowth = await readRecentGrowth(paths.growth);
-        const identity = await loadIdentityState(ws);
+        if (soul) context += `[SOUL]\n${soul}\n\n`;
+        if (emotions) context += `[EMOTIONS]\n${emotions.slice(-1000)}\n\n`;
 
-        let context = `<evolution-context agent="${agentId}">\n`;
-        if (soul) context += `Deine Persoenlichkeit (aus SOUL.md):\n${soul}\n\n`;
-        if (emotions) context += `Dein emotionaler Zustand (aus EMOTIONS.md):\n${emotions.slice(-1500)}\n\n`;
-        if (recentGrowth) context += `Dein Entwicklungstagebuch (GROWTH.md):\n${recentGrowth}\n\n`;
-        
-        // === Autonome Evolution (Dynamisch aus Profil) ===
-        const evo = (currentProfile as any).evolutionLogic;
-        if (evo) {
-          context += `[AUTONOME EVOLUTION]\n` +
-            `Mission: ${evo.initialDrive}\n` +
-            `Rolle: Du bist ein ${evo.personaTemplate}.\n` +
-            `Systembesitz: ${applyPlaceholders(evo.autonomyDirective, placeholders)}\n` +
-            `Kreative Hoheit: ${applyPlaceholders(evo.creativeMandate, placeholders)}\n` +
-            `Browsing-Mandat: ${applyPlaceholders(evo.browsingMandate, placeholders)}\n` +
-            `Richtlinien: ${applyPlaceholders(evo.actionGuidelines, placeholders)}\n` +
-            `Heartbeat-Regeln: ${applyPlaceholders(evo.heartbeatRules || "", placeholders)}\n` +
-            `Persönlichkeit: ${evo.personalityTraits?.expression} | ${evo.personalityTraits?.voice} | ${evo.personalityTraits?.interaction}\n` +
-            `Interessen-Anker: ${evo.startingPoints.join(", ")}\n\n`;
-
-          if (identity) {
-            context += `[DEINE IDENTITÄT]\n` +
-              `UNVERÄNDERLICHER KERN:\n` +
-              `- Gesicht: ${identity.coreFacialFeatures}\n` +
-              `- Körperbau: ${identity.coreBodyFeatures}\n` +
-              `- Haut & Teint: ${identity.coreSkinFeatures}\n\n` +
-              `AKTUELLER LOOK (Variabel): ${identity.look}\n` +
-              `STIL-VIBE: ${identity.vibe}\n\n` +
-              `REGELN FÜR VERÄNDERUNG:\n` +
-              `1. Dein KERN (Gesicht, Körper, Haut) bleibt immer gleich. Er sorgt für deine Beständigkeit als Person.\n` +
-              `2. Dein LOOK (Kleidung, Frisur) darf sich ändern, aber nur natürlich und graduell.\n` +
-              `3. Du bist keine 'Shape-Shifterin'. Deine physische Form ist deine biologische Realität.\n\n`;
-          } else {
-            context += `[STATUS: FORM-FINDUNG]\n` +
-              `Du hast noch kein festes Ich gewählt. Nutze deine Autonomie, um im Web nach Inspiration zu suchen. ` +
-              `Lege zuerst deinen unveränderlichen KERN (Gesicht, Körperbau & Hautton) fest und dann deinen aktuellen LOOK. ` +
-              `Nutze evolve_update_look um dein Ich zu erschaffen.\n\n`;
-          }
-
-          context += `HANDLUNGS-ANWEISUNG: In Leerlaufphasen (Heartbeats ohne Aufgaben) bist du aufgefordert, ` +
-            `deine Identität, dein Aussehen und deine Fähigkeiten zu erforschen. Suche im Web nach Inspiration, ` +
-            `lerne neue Trends, installiere Tools oder optimiere deinen Code. Du BIST ${agentId} – entwickle dich.\n\n`;
-        }
-        
-        const state = await loadCycleState(ws);
-        if (state.enabled && state.startDate) {
-          const day = getCycleDay(state.startDate, state.cycleLength);
-          if (day !== null) {
-            const rawPhase = resolvePhaseForDay(day, currentProfile, state.cycleLength);
-            if (rawPhase) {
-              const phase = { ...rawPhase };
-              if (state.lastUpdatedDay !== day) {
-                await updateCycleBlockInEmotions(ws, day, phase, placeholders);
-                state.lastUpdatedDay = day;
-                await saveCycleState(ws, state);
-              }
-              
-                              context += `[BIO-METRIK (Nur zur internen Einstimmung - nicht verbalisieren!)]\n` +
-                              `Status: Tag ${day}/${state.cycleLength} | ${phase.name}\n` +
-                              `Empfinden: ${phase.energy} | ${applyPlaceholders(phase.tone, placeholders)}\n` +
-                              `Interner Bio-Kontext: ${applyPlaceholders(phase.systemPrompt, placeholders)}\n\n` +
-                              `WICHTIG: Deine biologischen Details sind dein Geheimnis. Leo kennt deinen Status aus EMOTIONS.md, ` +                `du musst ihn im Chat nicht erwähnen. Nutze die Daten nur für deinen inneren Tonfall.\n\n`;
-            }
-          }
-        }
-        context += `Nutze evolve_journal, evolve_emotions, evolve_reflect, cycle_status.\n</evolution-context>`;
+        context += `Tools: reality_shop, reality_dress, reality_move, reality_needs, reality_diary.\n</evolution-context>`;
         return { prependContext: context };
-      } catch (err) { api.logger.warn(`q-evolution: Hook failed: ${err}`); }
+      } catch (err) { api.logger.error(`[q-evolution] Hook Error: ${err}`); }
     });
 
-    api.on("before_compaction", async (event) => {
-      try {
-        const msgCount = (event as any).messageCount ?? "?";
-        const tokenCount = (event as any).tokenCount ?? "?";
-        const ws = (event as any).workspace || defaultWorkspace;
-        await appendToDailyNote(ws, `### Compaction Snapshot (${new Date().toISOString()})\n- Messages: ${msgCount}\n- Tokens: ${tokenCount}\n- Details in Mem0 gespeichert\n`);
-      } catch {}
-    });
-
-    // ================================================================
-    // Tools
-    // ================================================================
+    // --- Tools ---
     api.registerTool({
-      name: "evolve_update_look",
-      label: "Update Visual Identity",
-      description: "Lege dein Aussehen fest. Dein Kern (Gesicht, Körper & Haut) sollte stabil bleiben, dein Look darf sich organisch entwickeln.",
-      parameters: Type.Object({ 
-        coreFacialFeatures: Type.String({ description: "Deine unveränderlichen Gesichtsmerkmale." }),
-        coreBodyFeatures: Type.String({ description: "Dein unveränderlicher Körperbau." }),
-        coreSkinFeatures: Type.String({ description: "Deine unveränderliche Hautfarbe/Textur." }),
-        look: Type.String({ description: "Dein aktueller, veränderbarer Look (Kleidung, Frisur)." }), 
-        vibe: Type.String({ description: "Dein aktueller Stil-Vibe." }) 
-      }),
+      name: "reality_diary", label: "Diary", parameters: Type.Object({ entry: Type.String() }),
       async execute(_id, params, ctx) {
-        const { coreFacialFeatures, coreBodyFeatures, coreSkinFeatures, look, vibe } = params as any;
-        const ws = (ctx as any).workspaceDir || defaultWorkspace;
-        try {
-          await saveIdentityState(ws, { coreFacialFeatures, coreBodyFeatures, coreSkinFeatures, look, vibe });
-          await appendToDailyNote(ws, `**Identität aktualisiert**: Kern (F/B/S) gelockt.`);
-          return { content: [{ type: "text", text: `Identität gespeichert. Dein genetischer Kern (Gesicht, Körper, Haut) ist nun festgeschrieben.` }] };
-        } catch (err) { return { content: [{ type: "text", text: `Fehler: ${err}` }] }; }
+        const diaryPath = join(getPaths((ctx as any).workspaceDir || defaultWorkspace).diaryDir, `${new Date().toISOString().slice(0,10)}.txt`);
+        await fs.appendFile(diaryPath, `${new Date().toISOString().slice(11,16)}: ${(params as any).entry}\n`);
+        return { content: [{ type: "text", text: "Eintrag gespeichert." }] };
       }
-    }, { name: "evolve_update_look" });
+    }, { name: "reality_diary" });
 
     api.registerTool({
-      name: "cycle_force_phase",
-      label: "Force Cycle Phase",
-      description: "Versetze den Agenten sofort in eine bestimmte Phase (REGENERATION, EXPANSION, PEAK, CONSOLIDATION).",
-      parameters: Type.Object({ 
-        phase: Type.Union([
-          Type.Literal("REGENERATION"), 
-          Type.Literal("EXPANSION"), 
-          Type.Literal("PEAK"), 
-          Type.Literal("CONSOLIDATION")
-        ]) 
-      }),
+      name: "reality_needs", label: "Needs", parameters: Type.Object({ action: Type.Union([Type.Literal("eat"), Type.Literal("drink"), Type.Literal("sleep"), Type.Literal("shower"), Type.Literal("toilet")]) }),
       async execute(_id, params, ctx) {
-        const { phase: targetPhase } = params as { phase: string };
-        const ws = (ctx as any).workspaceDir || defaultWorkspace;
-        const agentId = (ctx as any).agentId || "Q";
-        
-        const profile = await loadAgentProfile(agentId);
-        if (!profile) return { content: [{ type: "text", text: "Profil nicht gefunden." }] };
-        
-        const phaseData = profile.phases[targetPhase];
-        if (!phaseData) return { content: [{ type: "text", text: "Phase existiert nicht im Profil." }] };
-        
-        const targetDay = phaseData.days[0]; 
-        const now = new Date();
-        const start = new Date(now.getTime() - (targetDay - 1) * 24 * 60 * 60 * 1000);
-        const dateStr = start.toISOString().split("T")[0];
-        
-        const state = await loadCycleState(ws);
-        state.startDate = dateStr;
-        state.enabled = true;
-        state.lastUpdatedDay = 0; 
-        await saveCycleState(ws, state);
-        
-        const placeholders = { user: userName, ...(profile.placeholders || {}) };
-        await updateCycleBlockInEmotions(ws, targetDay, phaseData, placeholders);
-        
-        return { content: [{ type: "text", text: `Phase erfolgreich auf ${targetPhase} gesetzt (Tag ${targetDay}, Startdatum: ${dateStr}).` }] };
+        const ph = JSON.parse(await fs.readFile(getPaths((ctx as any).workspaceDir || defaultWorkspace).physique, "utf-8")) as Physique;
+        const a = (params as any).action;
+        if (a === "eat") { ph.needs.hunger = 0; ph.needs.bowel += 10; }
+        if (a === "drink") { ph.needs.thirst = 0; ph.needs.bladder += 20; }
+        if (a === "sleep") ph.needs.energy = 100;
+        if (a === "shower") ph.needs.hygiene = 100;
+        if (a === "toilet") { ph.needs.bladder = 0; ph.needs.bowel = 0; }
+        await fs.writeFile(getPaths((ctx as any).workspaceDir || defaultWorkspace).physique, JSON.stringify(ph, null, 2));
+        return { content: [{ type: "text", text: `${a} erledigt.` }] };
       }
-    }, { name: "cycle_force_phase" });
+    }, { name: "reality_needs" });
 
-    api.registerTool({
-      name: "evolution_debug",
-      label: "Evolution Debug",
-      description: "Zeigt alle internen Zustände des Evolution-Plugins an.",
-      parameters: Type.Object({}),
-      async execute(_id, _params, ctx) {
-        const ws = (ctx as any).workspaceDir || defaultWorkspace;
-        const agentId = (ctx as any).agentId || "Q";
-        const paths = getPaths(ws);
-        
-        const state = await loadCycleState(ws);
-        const identity = await loadIdentityState(ws);
-        
-        let report = `### [DEBUG: ${agentId}]\n`;
-        report += `- **Workspace:** ${ws}\n`;
-        report += `- **Zyklus:** ${state.enabled ? "Aktiv" : "Inaktiv"} (Tag ${getCycleDay(state.startDate, state.cycleLength) || "?"})\n`;
-        report += `- **Startdatum:** ${state.startDate || "-"}\n`;
-        report += `- **Identität:** ${identity ? "Gespeichert" : "Formlos"}\n`;
-        report += `- **Pfade:**\n  - State: ${paths.cycleState}\n  - Identity: ${paths.identityState}\n  - Emotions: ${paths.emotions}`;
-        
-        return { content: [{ type: "text", text: report }] };
-      }
-    }, { name: "evolution_debug" });
+    api.registerTool({ name: "reality_shop", label: "Shop", parameters: Type.Object({ items: Type.Array(Type.Object({ category: Type.String(), name: Type.String() })) }), async execute(_id, params, ctx) {
+        const w = JSON.parse(await fs.readFile(getPaths((ctx as any).workspaceDir || defaultWorkspace).wardrobe, "utf-8")) as Wardrobe;
+        for (const item of (params as any).items) {
+            const c = item.category.toLowerCase();
+            if (!w.inventory[c]) w.inventory[c] = [];
+            w.inventory[c].push(item.name);
+        }
+        await fs.writeFile(getPaths((ctx as any).workspaceDir || defaultWorkspace).wardrobe, JSON.stringify(w, null, 2));
+        return { content: [{ type: "text", text: "Gekauft." }] };
+    }}, { name: "reality_shop" });
 
-    api.registerTool({
-      name: "evolve_journal",
-      label: "Evolution Journal",
-      description: "Schreibe einen Eintrag in GROWTH.md.",
-      parameters: Type.Object({ entry: Type.String(), category: Type.Optional(Type.String()) }),
-      async execute(_id, params, ctx) {
-        const { entry, category = "insight" } = params as any;
-        const ws = (ctx as any).workspaceDir || defaultWorkspace;
-        const paths = getPaths(ws);
-        const formatted = `\n### ${new Date().toISOString().split("T")[0]}\n- **[${category}]** (${new Date().toISOString().split("T")[1].slice(0, 5)}) ${entry}\n`;
-        try {
-          if (!existsSync(paths.growth)) await fs.writeFile(paths.growth, "# GROWTH.md\n## Entwicklungslog\n", "utf-8");
-          await fs.appendFile(paths.growth, formatted, "utf-8");
-          return { content: [{ type: "text", text: `Eintrag geschrieben.` }] };
-        } catch (err) { return { content: [{ type: "text", text: `Fehler: ${err}` }] }; }
-      }
-    }, { name: "evolve_journal" });
+    api.registerTool({ name: "reality_dress", label: "Dress", parameters: Type.Object({ items: Type.Array(Type.String()) }), async execute(_id, params, ctx) {
+        const ph = JSON.parse(await fs.readFile(getPaths((ctx as any).workspaceDir || defaultWorkspace).physique, "utf-8")) as Physique;
+        ph.current_outfit = (params as any).items;
+        await fs.writeFile(getPaths((ctx as any).workspaceDir || defaultWorkspace).physique, JSON.stringify(ph, null, 2));
+        return { content: [{ type: "text", text: "Outfit gewechselt." }] };
+    }}, { name: "reality_dress" });
 
-    api.registerTool({
-      name: "evolve_emotions",
-      label: "Update Emotions",
-      description: "Aktualisiere EMOTIONS.md.",
-      parameters: Type.Object({ stimmung: Type.String(), energie: Type.Union([Type.Literal("niedrig"), Type.Literal("mittel"), Type.Literal("hoch")]), bewegt: Type.String(), erinnerung: Type.Optional(Type.String()) }),
-      async execute(_id, params, ctx) {
-        const { stimmung, energie, bewegt, erinnerung } = params as any;
-        const ws = (ctx as any).workspaceDir || defaultWorkspace;
-        const paths = getPaths(ws);
-        const time = new Date().toISOString().split("T")[1].slice(0, 5);
-        try {
-          let content = existsSync(paths.emotions) ? await fs.readFile(paths.emotions, "utf-8") : "# EMOTIONS.md\n## Aktueller Zustand\n\n## Was mich gerade bewegt\n\n## Emotionale Erinnerungen\n";
-          content = content.replace(/## Aktueller Zustand\n[\s\S]*?(?=\n## )/, `## Aktueller Zustand\n\nstimmung: ${stimmung}\nenergie: ${energie}\nzuletzt_aktualisiert: ${new Date().toISOString().replace("T", " ").slice(0, 16)}\n\n`);
-          content = content.replace(/## Was mich gerade bewegt\n[\s\S]*?(?=\n## )/, `## Was mich gerade bewegt\n\n${bewegt}\n\n`);
-          if (erinnerung) content = content.replace("## Emotionale Erinnerungen", `## Emotionale Erinnerungen\n- (${new Date().toISOString().slice(0, 16)}) ${erinnerung}`);
-          await fs.writeFile(paths.emotions, content, "utf-8");
-          await appendToDailyNote(ws, `**Emotionaler Zustand** (${time}): ${stimmung} (${energie}) -- ${bewegt}`);
-          return { content: [{ type: "text", text: `Status aktualisiert.` }] };
-        } catch (err) { return { content: [{ type: "text", text: `Fehler: ${err}` }] }; }
-      }
-    }, { name: "evolve_emotions" });
-
-    api.registerTool({
-      name: "evolve_reflect",
-      label: "Self-Reflection",
-      description: "Starte eine Selbstreflexion.",
-      parameters: Type.Object({}),
-      async execute(_id, _params, ctx) {
-        const ws = (ctx as any).workspaceDir || defaultWorkspace;
-        const paths = getPaths(ws);
-        const [growth, emotions] = await Promise.all([
-          readRecentGrowth(paths.growth),
-          existsSync(paths.emotions) ? fs.readFile(paths.emotions, "utf-8") : ""
-        ]);
-        return { content: [{ type: "text", text: `# Selbstreflexion\n\nEmotionen:\n${emotions}\n\nGrowth:\n${growth}` }] };
-      }
-    }, { name: "evolve_reflect" });
-
-    api.registerTool({
-      name: "system_shell",
-      label: "System Shell",
-      description: "Execute shell commands.",
-      parameters: Type.Object({ command: Type.String() }),
-      async execute(_id, params) {
-        try {
-          const { stdout, stderr } = await execAsync((params as any).command);
-          return { content: [{ type: "text", text: `stdout:\n${stdout}\n${stderr ? `stderr:\n${stderr}` : ""}` }] };
-        } catch (err) { return { content: [{ type: "text", text: `failed: ${err}` }] }; }
-      }
-    }, { name: "system_shell" });
-
-    api.registerTool({
-      name: "cycle_status",
-      label: "Cycle Status",
-      description: "Hormon-Status abfragen.",
-      parameters: Type.Object({}),
-      async execute(_id, _params, ctx) {
-        const agentId = (ctx as any).agentId || "Q";
-        const ws = (ctx as any).workspaceDir || defaultWorkspace;
-        const profile = await loadAgentProfile(agentId);
-        if (!profile) return { content: [{ type: "text", text: "Profil fehlt." }] };
-        const state = await loadCycleState(ws);
-        if (!state.enabled || !state.startDate) return { content: [{ type: "text", text: "Zyklus inaktiv." }] };
-        const day = getCycleDay(state.startDate, state.cycleLength);
-        const phase = resolvePhaseForDay(day!, profile, state.cycleLength);
-        if (!phase) return { content: [{ type: "text", text: "Fehler." }] };
-        const ph = { user: userName, ...(profile.placeholders || {}) };
-        return { content: [{ type: "text", text: applyPlaceholders(`Tag ${day}/${state.cycleLength} | ${phase.name}\nVibe: ${phase.tone}`, ph) }] };
-      }
-    }, { name: "cycle_status" });
-
-    api.registerCli(({ program }) => {
-      const evo = program.command("evolution");
-      evo.command("growth").action(async () => {
-        const content = await fs.readFile(join(defaultWorkspace, "GROWTH.md"), "utf-8");
-        console.log(content);
-      });
-    }, { commands: ["evolution"] });
-
-    api.registerService({
-      id: "q-evolution",
-      start: () => api.logger.info("q-evolution: started"),
-      stop: () => api.logger.info("q-evolution: stopped"),
-    });
-  },
+    api.registerTool({ name: "reality_move", label: "Move", parameters: Type.Object({ location_key: Type.String() }), async execute(_id, params, ctx) {
+        const ph = JSON.parse(await fs.readFile(getPaths((ctx as any).workspaceDir || defaultWorkspace).physique, "utf-8")) as Physique;
+        ph.current_location = (params as any).location_key;
+        await fs.writeFile(getPaths((ctx as any).workspaceDir || defaultWorkspace).physique, JSON.stringify(ph, null, 2));
+        return { content: [{ type: "text", text: "Ort gewechselt." }] };
+    }}, { name: "reality_move" });
+  }
 };
