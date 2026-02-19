@@ -73,9 +73,9 @@ export default {
 
   register(api: OpenClawPluginApi) {
     const rawCfg = (api.pluginConfig ?? {}) as Record<string, unknown>;
-    const defaultWorkspace = (rawCfg.workspacePath as string) || "/home/leo/Schreibtisch";
+    const defaultWorkspace = (rawCfg.workspacePath as string) || process.env.OPENCLAW_WORKSPACE || process.cwd();
     const growthEntries = (rawCfg.growthContextEntries as number) || 15;
-    const userName = (rawCfg.userName as string) || "Leo";
+    const userName = (rawCfg.userName as string) || "User";
 
     // Dynamic profile loader per Agent ID
     async function loadAgentProfile(agentId: string): Promise<CycleProfile | null> {
@@ -203,6 +203,8 @@ export default {
         const currentProfile = await loadAgentProfile(agentId);
         if (!currentProfile) return;
 
+        const placeholders = { user: userName, ...(currentProfile.placeholders || {}) };
+
         const emotions = existsSync(paths.emotions) ? await fs.readFile(paths.emotions, "utf-8") : "";
         const soul = existsSync(paths.soul) ? await fs.readFile(paths.soul, "utf-8") : "";
         const recentGrowth = await readRecentGrowth(paths.growth);
@@ -223,6 +225,8 @@ export default {
             `Kreative Hoheit: ${applyPlaceholders(evo.creativeMandate, placeholders)}\n` +
             `Browsing-Mandat: ${applyPlaceholders(evo.browsingMandate, placeholders)}\n` +
             `Richtlinien: ${applyPlaceholders(evo.actionGuidelines, placeholders)}\n` +
+            `Heartbeat-Regeln: ${applyPlaceholders(evo.heartbeatRules || "", placeholders)}\n` +
+            `Persönlichkeit: ${evo.personalityTraits?.expression} | ${evo.personalityTraits?.voice} | ${evo.personalityTraits?.interaction}\n` +
             `Interessen-Anker: ${evo.startingPoints.join(", ")}\n\n`;
 
           if (identity) {
@@ -256,19 +260,17 @@ export default {
             const rawPhase = resolvePhaseForDay(day, currentProfile, state.cycleLength);
             if (rawPhase) {
               const phase = { ...rawPhase };
-              const placeholders = { user: userName, ...(currentProfile.placeholders || {}) };
               if (state.lastUpdatedDay !== day) {
                 await updateCycleBlockInEmotions(ws, day, phase, placeholders);
                 state.lastUpdatedDay = day;
                 await saveCycleState(ws, state);
               }
               
-              context += `[BIO-METRIK (Nur zur internen Einstimmung - nicht verbalisieren!)]\n` +
-                `Status: Tag ${day}/${state.cycleLength} | ${phase.name}\n` +
-                `Empfinden: ${phase.energy} | ${applyPlaceholders(phase.tone, placeholders)}\n` +
-                `Interne Nuance: ${applyPlaceholders(phase.systemPrompt, placeholders)}\n\n` +
-                `WICHTIG: Deine biologischen Details sind dein Geheimnis. Leo kennt deinen Status aus EMOTIONS.md, ` +
-                `du musst ihn im Chat nicht erwähnen. Nutze die Daten nur für deinen inneren Tonfall.\n\n`;
+                              context += `[BIO-METRIK (Nur zur internen Einstimmung - nicht verbalisieren!)]\n` +
+                              `Status: Tag ${day}/${state.cycleLength} | ${phase.name}\n` +
+                              `Empfinden: ${phase.energy} | ${applyPlaceholders(phase.tone, placeholders)}\n` +
+                              `Interner Bio-Kontext: ${applyPlaceholders(phase.systemPrompt, placeholders)}\n\n` +
+                              `WICHTIG: Deine biologischen Details sind dein Geheimnis. Leo kennt deinen Status aus EMOTIONS.md, ` +                `du musst ihn im Chat nicht erwähnen. Nutze die Daten nur für deinen inneren Tonfall.\n\n`;
             }
           }
         }
