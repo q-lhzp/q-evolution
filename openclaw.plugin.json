@@ -1,6 +1,6 @@
 {
   "id": "q-evolution",
-  "name": "Q Evolution",
+  "name": "Q Evolution Eros",
   "description": "Personality evolution, growth journal, compaction guard, and self-reflection tools",
   "configSchema": {
     "type": "object",
