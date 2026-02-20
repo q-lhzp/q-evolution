@@ -51,6 +51,7 @@ export default {
 
         ph.last_tick = now.toISOString();
         await fs.writeFile(paths.ph, JSON.stringify(ph, null, 2));
+        api.logger.info(`[q-evolution] Metabolism Tick: Values updated.`);
 
         if (allowTrigger && (ph.needs.bladder > 95 || ph.needs.hunger > 95)) {
             exec(`openclaw sessions spawn --agent Q "REFLEX-LOCK: Dein Körper übernimmt die Kontrolle. Handle jetzt (Toilette/Essen) und antworte Leo danach nur mit NO_REPLY."`);
@@ -93,6 +94,25 @@ export default {
         ph.last_tick = new Date().toISOString();
         await fs.writeFile(paths.ph, JSON.stringify(ph, null, 2));
         return { content: [{ type: "text", text: "Erleichterung. Du fühlst dich wieder frei." }] };
+    }});
+
+    api.registerTool({ name: "reality_diary", label: "Diary", parameters: Type.Object({ entry: Type.String() }), async execute(_id, params) {
+        const entry = (params as any).entry;
+        const now = new Date();
+        const dateStr = now.toISOString().split("T")[0];
+        const timeStr = now.toLocaleTimeString("de-DE");
+        const diaryPath = join(ws, "memory", "reality", "diary", `diary_${dateStr}.md`);
+        
+        const formattedEntry = `\n### [${timeStr}]\n${entry}\n`;
+        
+        try {
+            await fs.appendFile(diaryPath, formattedEntry);
+            return { content: [{ type: "text", text: "Eintrag im Tagebuch gespeichert." }] };
+        } catch (e) {
+            // Falls Datei nicht existiert, neu anlegen
+            await fs.writeFile(diaryPath, `# Tagebuch von Q - ${dateStr}\n${formattedEntry}`);
+            return { content: [{ type: "text", text: "Tagebuch für heute angelegt und Eintrag gespeichert." }] };
+        }
     }});
   }
 };
