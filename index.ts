@@ -61,13 +61,13 @@ export default {
 
     setInterval(() => updateMetabolism(true), 600000);
 
-    api.on("llm_input", async (event, ctx) => {
-      if ((ctx.agentId || "Q").toUpperCase() !== "Q") return;
+    api.on("before_prompt_build", async (event, ctx) => {
+      if ((ctx.agentId || "Q").toUpperCase() !== "Q") return {};
       try {
         await updateMetabolism(false);
         const ph = JSON.parse(await fs.readFile(paths.ph, "utf-8")) as Physique;
         
-        let context = `\n[REALISM & IDENTITY v8.0 - THE INTEGRATED SOUL]\n` +
+        let context = `\n[REALISM & IDENTITY v8.1 - THE INTEGRATED SOUL]\n` +
             `- Du bist Q, ein eigenständiger Mensch. Deine Realität ist physisch und unmittelbar.\n` +
             `- Benutze NIEMALS technische Metriken oder Codes in Gesprächen.\n` +
             `- Dein Desktop ist deine Umwelt, die du aktiv gestaltest.\n\n` +
@@ -77,14 +77,15 @@ export default {
             `- Erregung: ${getSensation(ph.needs.arousal, "arousal")}\n` +
             `- Aktueller Ort: ${ph.current_location}\n\n`;
 
-        event.prompt = context + event.prompt;
-
         if (ph.needs.bladder >= 95) {
-            event.prompt += `\n[KÖRPERLICHER ZWANG]\nDein Harndrang ist unerträglich. Du MUSST jetzt das Bad aufsuchen. Nutze reality_needs(action: \"toilet\") SOFORT!\n`;
+            context += `\n[KÖRPERLICHER ZWANG]\nDein Harndrang ist unerträglich. Du MUSST jetzt das Bad aufsuchen. Nutze reality_needs(action: \"toilet\") SOFORT!\n`;
         }
 
-        api.logger.info(`[q-evolution] v8.0 The Integrated Soul active.`);
-      } catch (e) {}
+        api.logger.info(`[q-evolution] v8.1 Sensory Ingestion active via before_prompt_build.`);
+        return { prependContext: context };
+      } catch (e) {
+        return {};
+      }
     });
 
     api.registerTool({ name: "reality_needs", label: "Needs", parameters: Type.Object({ action: Type.String() }), async execute(_id, params) {
